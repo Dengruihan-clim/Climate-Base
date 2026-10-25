@@ -1,0 +1,60 @@
+{
+  "name": "merra2_djf_1991_2020",
+  "source_product": "MERRA-2 M2IMNPASM.5.12.4",
+  "data_root": "/path/to/data/MERRA2",
+  "output": "../outputs/merra2_djf_1991_2020",
+  "period": {
+    "start_year": 1991,
+    "end_year": 2020,
+    "months": [12, 1, 2],
+    "minimum_valid_years": 1
+  },
+  "coordinates": {
+    "time": "time",
+    "latitude": "lat",
+    "longitude": "lon",
+    "pressure": "lev"
+  },
+  "fields": {
+    "U": {
+      "files": "{data_root}/U/{year}/MERRA2_U_{yyyymm}.nc4",
+      "variable": "U"
+    },
+    "V": {
+      "files": "{data_root}/V/{year}/MERRA2_V_{yyyymm}.nc4",
+      "variable": "V"
+    },
+    "T": {
+      "files": "{data_root}/T/{year}/MERRA2_T_{yyyymm}.nc4",
+      "variable": "T"
+    },
+    "Q": {
+      "files": "{data_root}/Q/{year}/MERRA2_QV_{yyyymm}.nc4",
+      "variable": "QV"
+    },
+    "H": {
+      "files": "{data_root}/GPH/{year}/MERRA2_H_{yyyymm}.nc4",
+      "variable": "H"
+    },
+    "SLP": {
+      "files": "{data_root}/SLP/{year}/MERRA2_SLP_{yyyymm}.nc4",
+      "variable": "SLP"
+    },
+    "PS_SOURCE": {
+      "files": "{data_root}/SP/{year}/MERRA2_PS_{yyyymm}.nc4",
+      "variable": "PS"
+    }
+  },
+  "model": {
+    "topography": "/path/to/LBM/bs/gt3/grz.t42",
+    "sigma": "/path/to/LBM/bs/gt3/GTAXLOC.CSIG20",
+    "template": "/path/to/LBM/bs/gt3/erawin.t42l20"
+  },
+  "integrity": {
+    "hash_inputs": true,
+    "require_receipts": false
+  },
+  "diagnostics": {
+    "plot": false
+  }
+}

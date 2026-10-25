@@ -1,0 +1,91 @@
+{
+  "prepared_date": "2026-10-25",
+  "timezone": "Asia/Shanghai",
+  "authors": [
+    "RH_Deng",
+    "Codex (OpenAI, AI-assisted refactoring)"
+  ],
+  "scope": "LBM T42L20 stationary dry basic state only",
+  "interpreter": {
+    "used_user_specified_anaconda": true,
+    "interpreter_changed": false,
+    "packages_installed": false,
+    "existing_dependency_search_path_injected_for_validation_only": true,
+    "private_dependency_directory_distributed": false
+  },
+  "syntax": {
+    "method": "ast.parse",
+    "python_files_passed": 15
+  },
+  "documentation": {
+    "languages": [
+      "zh-CN",
+      "en"
+    ],
+    "main_guides": [
+      "README.md",
+      "README_EN.md"
+    ],
+    "source_notes": [
+      "docs/SOURCE_PROVENANCE.md",
+      "docs/SOURCE_PROVENANCE_EN.md"
+    ],
+    "internal_project_identifiers_distributed": false,
+    "documentation_only_update_no_algorithm_changes": true
+  },
+  "offline_unit_tests": {
+    "tests_run": 42,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "success": true
+  },
+  "cli_and_optional_plots": {
+    "demo_tool": "pass",
+    "module_cli": "pass",
+    "check_writes_nothing": "pass",
+    "optional_plots_png_pdf": "pass"
+  },
+  "original_builder_and_real_reference_acceptance": {
+    "real_model_references_with_synthetic_reanalysis": "complete",
+    "target_grid": "T42L20",
+    "reference_preflight": "configuration_and_model_references_valid",
+    "model_reference_sha256": {
+      "grz.t42": "49af84f4f779d8e91ac03b338c99713b56ee188cf6103097b2b02f706824f535",
+      "GTAXLOC.CSIG20": "d8911579ad0f93af44c1c788469047ca82d0ca8e27ebb36382a1e144a1380845",
+      "erawin.t42l20": "15a94927e73a37fe5e2b6dbeac8dd0fc71aa313aca6bc89d38c694c59afc2bd5"
+    },
+    "original_builder_float32_field_comparison": "exactly_equal",
+    "maximum_absolute_difference_by_field": {
+      "U": 0.0,
+      "V": 0.0,
+      "T": 0.0,
+      "PS": 0.0,
+      "Q": 0.0
+    },
+    "synthetic_input_months": 3,
+    "original_split_input_files": 21,
+    "new_multirecord_input_files": 1,
+    "real_reanalysis_rebuilt": false,
+    "model_integration_run": false,
+    "reference_files_in_distributed_package": false
+  },
+  "privacy": {
+    "pattern_scan": "pass",
+    "source_derived_private_account_check": "pass",
+    "issues": [],
+    "runtime_or_real_data_artifacts_distributed": false
+  },
+  "limits": [
+    "Real reanalysis data were not rebuilt.",
+    "No LBM model integration or stability experiment was run.",
+    "The exact original/new field comparison used the same synthetic reanalysis and real model reference data.",
+    "Pattern checks do not establish absence of every possible private string."
+  ],
+  "publication": {
+    "directory": "LBM/Basic",
+    "format": "source tree",
+    "archives_included": false,
+    "code_identical_to_previously_tested_package": true
+  }
+}
