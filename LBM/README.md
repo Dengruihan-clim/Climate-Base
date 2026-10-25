@@ -25,7 +25,6 @@ Credit the original LBM development and formulation with **Watanabe and Kimoto (
 LBM/
 ├── README.md
 ├── REFERENCES.md
-├── REFERENCES.md
 ├── Basic/
 │   ├── README.md
 │   ├── README_EN.md
