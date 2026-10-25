@@ -1,0 +1,8 @@
+{
+  "method": "tn_waf",
+  "input": "<DATA_ROOT>/wave_pattern.npz",
+  "output": "<OUTPUT_ROOT>/tn_wave_activity_flux.npz",
+  "units": {"psi": "m2 s-1", "u_background": "m s-1", "v_background": "m s-1"},
+  "options": {"pressure_hpa": 200.0, "min_speed": 5.0, "min_abs_lat": 10.0, "require_westerly": true},
+  "amplitude_description": "Supplied streamfunction perturbation pattern; flux scales with amplitude squared"
+}

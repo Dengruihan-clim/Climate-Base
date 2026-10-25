@@ -1,0 +1,116 @@
+{
+  "scope": "Synthetic and analytical inputs only; no real reanalysis processed",
+  "local_tests": {
+    "passed": 104,
+    "failed": 0,
+    "skipped": 1,
+    "skip_reason": "The workstation lacks windspharm; actual spectral tests were separately run against an installed backend",
+    "wave_tests": 37,
+    "circulation_tests": 35,
+    "wind_validation_and_contract_tests": 27,
+    "cli_tests": 5
+  },
+  "real_spectral_backend": {
+    "status": "passed",
+    "verification": "REAL windspharm/pyspharm synthetic analytic checks; no mocked transforms",
+    "analytic_cases_passed": 14,
+    "cases": [
+      {
+        "grid": "regular",
+        "case": "zero wind retains planetary vorticity and physical beta",
+        "passed": true
+      },
+      {
+        "grid": "regular",
+        "case": "solid-body rotation signs and Helmholtz components",
+        "passed": true
+      },
+      {
+        "grid": "regular",
+        "case": "degree-one velocity potential and physical divergence",
+        "passed": true
+      },
+      {
+        "grid": "regular",
+        "case": "omega zero excludes planetary terms from perturbation diagnostics",
+        "passed": true
+      },
+      {
+        "grid": "regular",
+        "case": "latitude reversal preserves northward signs and ascending outputs",
+        "passed": true
+      },
+      {
+        "grid": "regular",
+        "case": "multiple leading dimensions preserve independent fields",
+        "passed": true
+      },
+      {
+        "grid": "regular",
+        "case": "configured sphere radius controls physical inverse and gradient units",
+        "passed": true
+      },
+      {
+        "grid": "gaussian",
+        "case": "zero wind retains planetary vorticity and physical beta",
+        "passed": true
+      },
+      {
+        "grid": "gaussian",
+        "case": "solid-body rotation signs and Helmholtz components",
+        "passed": true
+      },
+      {
+        "grid": "gaussian",
+        "case": "degree-one velocity potential and physical divergence",
+        "passed": true
+      },
+      {
+        "grid": "gaussian",
+        "case": "omega zero excludes planetary terms from perturbation diagnostics",
+        "passed": true
+      },
+      {
+        "grid": "gaussian",
+        "case": "latitude reversal preserves northward signs and ascending outputs",
+        "passed": true
+      },
+      {
+        "grid": "gaussian",
+        "case": "multiple leading dimensions preserve independent fields",
+        "passed": true
+      },
+      {
+        "grid": "gaussian",
+        "case": "configured sphere radius controls physical inverse and gradient units",
+        "passed": true
+      }
+    ],
+    "versions": {
+      "numpy": "2.3.4",
+      "windspharm": "0.0.0",
+      "spharm": "1.0.9"
+    },
+    "limitations": [
+      "Analytic spherical fields only; no real reanalysis data were processed",
+      "Tolerances account for common single-precision SPHEREPACK builds",
+      "Contract tests with a mocked backend are separate from this report"
+    ]
+  },
+  "real_backend_tested_source_sha256": {
+    "winds": "ca476ed6e032cacd950aa09f3153445be51581afe9675331244df5839d746314",
+    "runner": "2a02923593bf50d25b5e9321a3a4888b23932feaefd671f0016e745d37a2b511"
+  },
+  "backend_version_note": "Versions are recorded exactly as reported by the validation environment; windspharm metadata 0.0.0 is not asserted to identify a published release",
+  "original_kernel_comparisons": {
+    "TN_cases": 4,
+    "linear_RWS_cases": 2,
+    "wave_finite_masks_identical": true,
+    "wave_max_abs_error": 0.0,
+    "circulation_selected_kernel_max_abs_error": 0.0
+  },
+  "installable_package_build": "passed",
+  "method_citations": "Kernel docstrings, citations.py, REFERENCES.md and CLI output metadata",
+  "privacy": "Placeholder paths; no original project names, server account details, credentials or datasets",
+  "business_entrypoints_or_scheduler_jobs_executed": false
+}

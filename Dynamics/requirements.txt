@@ -1,0 +1,3 @@
+numpy>=1.24
+# Global spherical-harmonic winds additionally require windspharm and its
+# compiled pyspharm/SPHEREPACK backend. See README.md and README_EN.md.
