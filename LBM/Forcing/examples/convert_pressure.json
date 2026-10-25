@@ -1,0 +1,25 @@
+{
+  "name": "merra2_djf_thermal_forcing",
+  "output": "../outputs/merra2_djf_thermal_forcing",
+  "input": {
+    "file": "/path/to/diagnosis/diagnosed_heating.nc",
+    "variable": "heating_k_day",
+    "coordinates": {
+      "pressure": "pressure_hpa",
+      "latitude": "lat",
+      "longitude": "lon"
+    }
+  },
+  "model": {
+    "background": "/path/to/output/basic.t42l20",
+    "sigma": "/path/to/model/GTAXLOC.CSIG20"
+  },
+  "region": {
+    "south": -45.0,
+    "north": 15.0,
+    "west": 30.0,
+    "east": 120.0,
+    "width": 5.0
+  },
+  "amplitude_multiplier": 1.0
+}

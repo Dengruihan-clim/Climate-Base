@@ -2,7 +2,7 @@
 
 [English](README_EN.md)
 
-**作者：RH_Deng；Codex（OpenAI，AI辅助整理与重构）**  
+**本仓库工具整理与重构作者：RH_Deng；Codex（OpenAI，AI辅助整理与重构）**  
 整理日期：2026-10-25
 
 本工具将全球气压层再分析月资料制作成 **LBM T42L20 干模式使用的三维背景态**。修改 JSON 配置、提供再分析资料和三份模型参考文件，即可运行；不依赖原服务器的账户、目录结构或作业调度系统。
@@ -10,6 +10,14 @@
 本工具由经过核对的 HPC 背景态制作程序重构，参考了原 DJF 入口及多个季节的扩展程序。原始入口和源代码 SHA256 见 [来源说明](docs/SOURCE_PROVENANCE.md)。输出包含完整的 U、V、T、PS、Q；V 保留资料中的非零结构，未强制设为零。Q 用于虚温地形订正和背景文件兼容，不能据此把本流程理解为已配置好的湿模式。
 
 本包目前固定 **128 × 64 Gaussian 网格、T42 标量谱投影、20 个 σ 层**。输入适配可处理符合下述契约的 MERRA-2、ERA5 或其他再分析 NetCDF；更换产品时需要确认变量、单位、气压层和科学适用性。随包只给出 MERRA-2 的真实资料配置示例，不声称已经用所有再分析产品完成科学验收。
+
+## 模型归属与科研引用
+
+LBM 原模式及其线性方程体系应引用 **M. Watanabe 与 M. Kimoto（2000，2001）**。[官方开发说明](https://ccsr.aori.u-tokyo.ac.jp/~lbm/sub/lbm_2.html)指出，模式基于东京大学 CCSR 与日本 NIES 共同开发的 **CCSR/NIES AGCM 5.4g** 动力核，在基本态附近对采用 σ 坐标的原始方程显式线性化。科研使用时建议同时引用 2000 年方法论文及 2001 年勘误；完整书目和 DOI 见 [LBM 统一参考与贡献说明](../REFERENCES.md)。
+
+背景态制作流程还参考了 GitHub 账号 **HanXiang0721** 所在仓库 `HanXiang0721/Note-Numerical-Methods` 的社区指南：[文件内容](https://github.com/HanXiang0721/Note-Numerical-Methods/blob/master/Linear-Baroclinic-Model%E4%BD%BF%E7%94%A8%E6%8C%87%E5%8D%97.md) · [用户指定的提交历史](https://github.com/HanXiang0721/Note-Numerical-Methods/commits/master/Linear-Baroclinic-Model%E4%BD%BF%E7%94%A8%E6%8C%87%E5%8D%97.md)。该指南是社区流程资料，其贡献者与原 LBM 模式开发者分别致谢。
+
+RH_Deng 与 Codex 的署名说明本仓库 Python 工具的整理、接口重构、测试与文档工作；不表示对原 LBM 模式、社区指南或再分析资料的作者身份。当前工具面向干模式背景态准备，保留 Q 不构成湿模式实现。使用者还应按实际数据产品补充资料引用，并遵守原模式及第三方资料的使用条件。
 
 ## 1. 环境
 

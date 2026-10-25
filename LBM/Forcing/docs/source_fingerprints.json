@@ -1,0 +1,203 @@
+{
+  "checked_date": "2026-10-25",
+  "timezone": "Asia/Shanghai",
+  "scope": "Read-only extraction of LBM apparent-heating and thermal-forcing preparation sources",
+  "remote_files_modified": false,
+  "original_entrypoints_executed": false,
+  "jobs_submitted_or_model_run": false,
+  "sources": [
+    {
+      "logical_source": "Original scientific documentation",
+      "source_filename": "README_Heating.txt",
+      "bytes": 4630,
+      "sha256": "cd2ac698cf5d6c6632000c313a274a76e6e5f69a89ba9bdf20a2120a767f32ec",
+      "local_copy_matches_remote": true
+    },
+    {
+      "logical_source": "Original scientific documentation",
+      "source_filename": "README_LBM_Forcing.txt",
+      "bytes": 4716,
+      "sha256": "5cfc1b41cf5f0961692a33322e1dcc35355711a5a0454bcdfba6cddd75ac4f7b",
+      "local_copy_matches_remote": true
+    },
+    {
+      "logical_source": "Inherited numerical or monthly-input support module",
+      "source_filename": "cir_io.py",
+      "bytes": 11686,
+      "sha256": "ead7dc7f0fb813f65b8097090ae8eab0cbdf5ef2566d97fd46ef35dd1a755a7b",
+      "local_copy_matches_remote": true
+    },
+    {
+      "logical_source": "Inherited numerical or monthly-input support module",
+      "source_filename": "djf_io.py",
+      "bytes": 17113,
+      "sha256": "ca3e19adc9b4fa8f4904b3c727cda6e0c127c530ffcd9de3ce121a8a1c1456af",
+      "local_copy_matches_remote": true
+    },
+    {
+      "logical_source": "Inherited numerical or monthly-input support module",
+      "source_filename": "djf_stats.py",
+      "bytes": 4888,
+      "sha256": "e88f85823231adac8ad7e5005a1c0d7da1ca04e05ac249109fa3ab49745d12a7",
+      "local_copy_matches_remote": true
+    },
+    {
+      "logical_source": "Inherited numerical or monthly-input support module",
+      "source_filename": "heating_io.py",
+      "bytes": 18624,
+      "sha256": "266afb3de5630ce53c180dda23b84b3bd127c4985e724874fc4ed2024b1fcfd9",
+      "local_copy_matches_remote": true
+    },
+    {
+      "logical_source": "Inherited numerical or monthly-input support module",
+      "source_filename": "heating_math.py",
+      "bytes": 11000,
+      "sha256": "0dd29bb22df1783714e867fc7a668f988e4e2ca6ce7dd69e010b4143af4f2aba",
+      "local_copy_matches_remote": true
+    },
+    {
+      "logical_source": "Native-pressure monthly atmospheric and surface-pressure reader",
+      "source_filename": "lbm_forcing_io.py",
+      "bytes": 15213,
+      "sha256": "769aca7604d07a7031b15cd7f29bf1fae388885263dd7f9988db382990ed7e69",
+      "local_copy_matches_remote": true
+    },
+    {
+      "logical_source": "Apparent-heating and regression numerical kernels",
+      "source_filename": "lbm_forcing_math.py",
+      "bytes": 10329,
+      "sha256": "76ae4af6aab30da7dd1f0afb8289f0cf5dc9f5ca1c7c24c4d0e2445fd2303008",
+      "local_copy_matches_remote": true
+    },
+    {
+      "logical_source": "Geographic taper and thermal-forcing binary I/O kernels",
+      "source_filename": "q1_to_lbm_math.py",
+      "bytes": 11137,
+      "sha256": "855fa0a24c9705fc3723f0aa430baf4ea551b44f34c2b6babc807e4e981da483",
+      "local_copy_matches_remote": true
+    },
+    {
+      "logical_source": "Original thermal-forcing remapping and file-generation entry",
+      "source_filename": "stage4_DJF_Q1toLBMforcing.py",
+      "bytes": 19362,
+      "sha256": "5cbd7c04721582f81310a523f7789c153a1a931a32f22a039ebd4ae7c166d30a",
+      "local_copy_matches_remote": true
+    },
+    {
+      "logical_source": "Original pressure-resolved apparent-heating diagnosis and partial-regression entry",
+      "source_filename": "stage4_DJF_lbm_forcing.py",
+      "bytes": 18857,
+      "sha256": "d2fa18b0759b538d3b0d039da7b51a15fe77075c24fdbc89248893f3222759e5",
+      "local_copy_matches_remote": true
+    },
+    {
+      "logical_source": "Original unit tests",
+      "source_filename": "test_heating_io.py",
+      "bytes": 12945,
+      "sha256": "0216df655d6b614d24cb862e2a638a3b420c095186c03b6fda98da1c161f92bf",
+      "local_copy_matches_remote": true
+    },
+    {
+      "logical_source": "Original unit tests",
+      "source_filename": "test_heating_math.py",
+      "bytes": 9400,
+      "sha256": "633fcedc2b486b5ded7f71284cd67f40a65b6810af21a944c5405ca0c2da79ac",
+      "local_copy_matches_remote": true
+    },
+    {
+      "logical_source": "Original unit tests",
+      "source_filename": "test_lbm_forcing_io.py",
+      "bytes": 17157,
+      "sha256": "ae84458ea6b630d2c8724df4692ed55d387b8a14b4ef30c28de833ae4bbf2316",
+      "local_copy_matches_remote": true
+    },
+    {
+      "logical_source": "Original unit tests",
+      "source_filename": "test_lbm_forcing_math.py",
+      "bytes": 11752,
+      "sha256": "e064aedead6848dc3429ec0c99caca27bc4bed3007c0ee09b4bebc972efc984d",
+      "local_copy_matches_remote": true
+    },
+    {
+      "logical_source": "Original unit tests",
+      "source_filename": "test_q1_to_lbm_math.py",
+      "bytes": 11101,
+      "sha256": "c98903a6bcffd9d43846feb14f9f9391e4ab8aa823fdf972d16635d127147ab4",
+      "local_copy_matches_remote": true
+    },
+    {
+      "logical_source": "Inherited numerical or monthly-input support module",
+      "source_filename": "tp_cir_io.py",
+      "bytes": 14168,
+      "sha256": "a9082ba1ca3ec7acc7c4e70e6d8153a05106361e6c1d85cc88aa8afc6e58ad03",
+      "local_copy_matches_remote": true
+    },
+    {
+      "logical_source": "Independent source-result audit",
+      "source_filename": "verify_lbm_forcing_results.py",
+      "bytes": 26474,
+      "sha256": "b5e5031fafa7abd6c253633b7ac7e22acbe380e74885f73de95e9b82fca68419",
+      "local_copy_matches_remote": true
+    },
+    {
+      "logical_source": "Independent source-result audit",
+      "source_filename": "verify_q1_to_lbm_forcing.py",
+      "bytes": 26305,
+      "sha256": "81fbcf17ade73d92b2ca6ddb36b8134375777f84e4c712866253c08f06b39ebd",
+      "local_copy_matches_remote": true
+    }
+  ],
+  "all_existing_local_copies_match_remote": true,
+  "entrypoint_review": {
+    "candidate_python_files_inspected": 20,
+    "inspection_scope": "Relevant top-level source programs in the requested source collection",
+    "more_general_replacement_found": false,
+    "notes": [
+      "The pressure-resolved diagnostic entry requires original monthly atmospheric fields, surface pressure, neighboring-temperature months and a pre-existing predictor/control series. Its default launch path submits scheduled work and must not be used as the reusable entry unchanged.",
+      "The remapping entry accepts previously diagnosed pressure-resolved heating regressions. It currently binds fixed products, years, analysis labels, region and original reference-manifest layout.",
+      "Other inspected candidates cover column heating, plotting, spherical wind diagnostics or operational submission. They do not replace the two LBM thermal-forcing preparation stages."
+    ]
+  },
+  "reusable_model_references": [
+    {
+      "logical_source": "Model sigma axis reused from existing verification snapshot",
+      "file": "GTAXLOC.CSIG20",
+      "bytes": 1120,
+      "sha256": "d8911579ad0f93af44c1c788469047ca82d0ca8e27ebb36382a1e144a1380845",
+      "matches_remote_reference_identity": true,
+      "downloaded_again": false,
+      "distribution": "private testing only; not for inclusion in the code package"
+    },
+    {
+      "logical_source": "Existing production LBM background reused from local result copy",
+      "file": "background.t42l20",
+      "bytes": 2659408,
+      "sha256": "61f637f0f7ad4605f488594143600217fd5214a53bbfef79f557663f6f5de78b",
+      "matches_remote_reference_identity": true,
+      "downloaded_again": false,
+      "distribution": "private testing only; not for inclusion in the code package"
+    }
+  ],
+  "model_reference_notes": [
+    "The earlier topography and background-format template are available in the existing private verification snapshot but are not required for thermal-only forcing remapping.",
+    "The supplied forcing must use the same model background surface pressure and sigma axis as the intended LBM experiment. A generic template background must not silently replace that model background.",
+    "The T42 Gaussian grid can be generated from the numerical/binary helpers. The thermal-forcing binary is written directly and needs no separate real forcing-file template."
+  ],
+  "scientific_file_contract": {
+    "target": "T42L20: 128 longitude x 64 Gaussian latitude x 20 sigma levels",
+    "target_pressure": "sigma times the selected model background PS",
+    "thermodynamic_units": "K day-1 divided by 86400 gives K s-1; energy heating uses the stated Cp before conversion",
+    "binary_layout": "61 big-endian Fortran sequential horizontal-plane float32 records: 20 vorticity, 20 divergence, 20 temperature, 1 surface pressure",
+    "thermal_only": "Vorticity, divergence and surface-pressure forcing records are zero",
+    "source_mapping_policy": "Signed heating/cooling retained; no vertical integral, amplitude normalization, significance filtering or final global spectral filtering",
+    "original_region": "45S to 15N, 30E to 120E; five-degree inner cosine taper; exact exterior zeros"
+  },
+  "actual_model_background_remote_check": {
+    "checked_date": "2026-10-25",
+    "bytes": 2659408,
+    "sha256": "61f637f0f7ad4605f488594143600217fd5214a53bbfef79f557663f6f5de78b",
+    "matches_existing_local_background": true,
+    "resolved_inside_original_model_directory": true,
+    "data_downloaded_again": false
+  }
+}

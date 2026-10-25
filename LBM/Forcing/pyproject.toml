@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reanalysis-lbm-forcing"
+version = "0.1.0"
+description = "Monthly reanalysis apparent heating and T42L20 dry LBM thermal forcing"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{name = "RH_Deng"}, {name = "Codex (OpenAI, tool organization and refactoring)"}]
+dependencies = ["numpy>=1.24", "scipy>=1.10", "netCDF4>=1.6"]
+
+[project.scripts]
+lbm-forcing = "lbm_forcing.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["lbm_forcing*"]

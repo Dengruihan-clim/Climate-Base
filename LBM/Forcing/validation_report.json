@@ -1,0 +1,74 @@
+{
+  "prepared_date": "2026-10-25",
+  "timezone": "Asia/Shanghai",
+  "tool_authors": [
+    "RH_Deng",
+    "Codex (OpenAI, tool organization and refactoring)"
+  ],
+  "scope": "Pressure-resolved reanalysis apparent-heating diagnosis, optional regression, and T42L20 dry thermal forcing",
+  "publication_directory": "LBM/Forcing",
+  "archives_included": false,
+  "interpreter": {
+    "used_user_specified_anaconda": true,
+    "interpreter_changed": false,
+    "dependencies_installed": false,
+    "existing_local_netCDF_dependency_path_used_only_in_validation_process": true,
+    "private_dependency_path_distributed": false
+  },
+  "offline_tests": {
+    "tests_run": 73,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "success": true
+  },
+  "command_line_checks": {
+    "demo_command": "pass",
+    "diagnose_cli": "pass",
+    "convert_cli": "pass",
+    "checks_write_no_output": "pass"
+  },
+  "original_code_and_model_reference_comparison": {
+    "q1_diagnostic_terms_compared": 4,
+    "q1_terms": "exactly_equal",
+    "controlled_regression_maps_compared": 13,
+    "controlled_regression": "exactly_equal",
+    "real_model_reference_with_synthetic_heating": "complete",
+    "original_and_refactored_forcing_grd": "byte_identical",
+    "forcing_payloads_compared": [
+      "vor",
+      "div",
+      "tmp",
+      "ps"
+    ],
+    "real_reanalysis_heating_rebuilt": false,
+    "model_integration_run": false,
+    "real_model_data_distributed": false
+  },
+  "post_suite_metadata_regression_check": {
+    "tests_run": 1,
+    "status": "passed",
+    "scope": "predictor trend units and beta scale metadata"
+  },
+  "enhancements_tested": [
+    "Configurable field names, CF coordinates, periods, optional generic CSV predictor/control",
+    "Monthly native terrain masks before strict interpolation; Gaussian source poles remain missing",
+    "Original CF calendar decoding before modern Gregorian calendar equivalence normalization",
+    "Independent predictor scale metadata and explicit amplitude multiplier",
+    "Binary/NetCDF float32 readback and exact nonthermal/exterior zeros"
+  ],
+  "references": "../REFERENCES.md",
+  "limits": [
+    "No real reanalysis dataset was rebuilt or scientifically accepted.",
+    "No LBM integration or stability experiment was run.",
+    "Real model background/sigma were used only privately with synthetic heating for comparison.",
+    "Monthly-mean Q1 does not resolve submonthly transient heat-transport covariances.",
+    "Pattern scanning does not establish absence of every possible private string."
+  ],
+  "privacy": {
+    "pattern_scan": "pass",
+    "source_derived_private_account_check": "pass",
+    "issues": []
+  },
+  "python_syntax_files_passed": 21
+}

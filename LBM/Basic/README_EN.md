@@ -2,7 +2,7 @@
 
 [简体中文](README.md)
 
-**Authors: RH_Deng; Codex (OpenAI, AI-assisted organization and refactoring)**  
+**Repository tool organization and refactoring: RH_Deng; Codex (OpenAI, AI-assisted organization and refactoring)**  
 Prepared: 2026-10-25
 
 This tool constructs **three-dimensional basic states for the dry T42L20 Linear Baroclinic Model (LBM)** from global monthly pressure-level reanalysis data. Provide the reanalysis data and three model reference files, then edit a JSON configuration to run the workflow. It is independent of the original server account, directory layout, and job scheduler.
@@ -10,6 +10,14 @@ This tool constructs **three-dimensional basic states for the dry T42L20 Linear 
 The numerical workflow was refactored from verified HPC basic-state builders, including an original DJF implementation and extensions for other seasons. Original entry points and source SHA256 fingerprints are documented in the [source provenance notes](docs/SOURCE_PROVENANCE_EN.md). Outputs contain complete U, V, T, PS, and Q fields. V retains its nonzero structure rather than being forced to zero. Q is retained for the virtual-temperature terrain correction and file compatibility; this does not configure a moist-model experiment.
 
 The current target is fixed at a **128 × 64 Gaussian grid, scalar T42 spectral projection, and 20 sigma levels**. The input interface can read MERRA-2, ERA5, or other reanalysis NetCDF data that meet the requirements below. When changing products, verify the variables, units, pressure levels, and scientific suitability. The package supplies a configuration example for actual MERRA-2 data; it does not claim scientific validation with every reanalysis product.
+
+## Model Attribution and Research Citation
+
+Credit the original LBM development and linear-equation formulation described by **M. Watanabe and M. Kimoto (2000, 2001)**. The [official development page](https://ccsr.aori.u-tokyo.ac.jp/~lbm/sub/lbm_2.html) states that LBM is based on the dynamical core of **CCSR/NIES AGCM version 5.4g**, jointly developed by CCSR at the University of Tokyo and NIES, with sigma-coordinate primitive equations explicitly linearized about a basic state. Research using LBM should cite the 2000 methods paper together with its 2001 corrigendum; full references and DOIs are in the [shared LBM references and contribution notes](../REFERENCES.md).
+
+The basic-state preparation workflow also refers to the community guide in **HanXiang0721/Note-Numerical-Methods**, credited by the GitHub handle **HanXiang0721**: [guide content](https://github.com/HanXiang0721/Note-Numerical-Methods/blob/master/Linear-Baroclinic-Model%E4%BD%BF%E7%94%A8%E6%8C%87%E5%8D%97.md) · [user-specified commit history](https://github.com/HanXiang0721/Note-Numerical-Methods/commits/master/Linear-Baroclinic-Model%E4%BD%BF%E7%94%A8%E6%8C%87%E5%8D%97.md). Credit this community workflow resource separately from the original LBM developers.
+
+RH_Deng and Codex are credited for organizing and refactoring this repository's Python tools, tests, interfaces, and documentation. That credit does not establish authorship of the original LBM, the community guide, or the reanalysis products. This tool prepares dry-model basic states; retaining Q does not implement a moist model. Cite the datasets actually used and follow the original model's and other providers' conditions.
 
 ## 1. Environment
 
