@@ -1,0 +1,30 @@
+{
+  "test_scope": "Synthetic annual series and fields only",
+  "tests_passed": 68,
+  "tests_failed": 0,
+  "core_statistics_tests": 59,
+  "year_alignment_tests": 9,
+  "independent_checks": [
+    "SciPy simple OLS, Theil-Sen and Kendall references",
+    "Explicit joint OLS coefficients, standard errors and partial correlations",
+    "Actual-year lag pairs and effective degrees of freedom",
+    "Known BH adjusted p values and explicit test families",
+    "Literal paired circular residual-block reconstruction"
+  ],
+  "legacy_kernel_comparison": {
+    "sen_slope_max_abs_error_per_year": 0.0,
+    "circular_indices_exactly_equal": true,
+    "bootstrap_slopes_compared": 316,
+    "bootstrap_max_abs_error_per_year": 6.938893903907228e-17
+  },
+  "csv_example_smoke": "passed",
+  "installable_package_build": "passed",
+  "bundled_real_or_generated_data": false,
+  "no_hpc_project_entrypoints_executed": true,
+  "limits": [
+    "Synthetic checks do not validate a specific climate mechanism",
+    "Lag-one inference is an approximation, not HAC",
+    "Nominal trend tests do not correct serial dependence",
+    "Block bootstrap requires complete consecutive annual records"
+  ]
+}

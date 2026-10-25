@@ -1,0 +1,17 @@
+{
+  "test_scope": "Synthetic CF data only",
+  "tests_passed": 42,
+  "tests_failed": 0,
+  "python_files_ast_passed": 11,
+  "pyproject_parsed": true,
+  "privacy_pattern_scan": "passed",
+  "bundled_real_or_generated_data": false,
+  "source_hash_comparison": "Three selected original kernels match read-only deployed SHA256; private mapping maintained separately",
+  "interpreter": "User-specified Anaconda Python; existing netCDF4/cftime temporarily loaded only in the validation process",
+  "no_hpc_project_entrypoints_executed": true,
+  "limits": [
+    "Tests do not certify all provider products or original GRIB inputs",
+    "Monthly records must already represent the intended monthly product",
+    "No horizontal/vertical interpolation or physical range validation is performed"
+  ]
+}

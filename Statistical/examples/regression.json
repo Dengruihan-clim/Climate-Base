@@ -1,0 +1,11 @@
+{
+  "input_csv": "<DATA_ROOT>/annual_series.csv",
+  "year_column": "year",
+  "predictor_column": "predictor",
+  "response_columns": ["response_a", "response_b"],
+  "control_columns": ["control"],
+  "include_trend": true,
+  "inference": "ols",
+  "min_samples": 10,
+  "output_json": "<OUTPUT_ROOT>/regression.json"
+}

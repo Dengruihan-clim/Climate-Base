@@ -1,0 +1,22 @@
+{
+  "data_root": "/path/to/data",
+  "fields": {
+    "temperature": {
+      "files": "temperature_{year}.nc",
+      "variable": "temperature",
+      "coordinates": {"time": "time", "latitude": "latitude", "longitude": "longitude", "pressure": "pressure_level"},
+      "expected_units": ["K", "degree_Celsius"],
+      "target_units": "K"
+    }
+  },
+  "archive": {
+    "longitude": "0_360",
+    "latitude_order": "ascending",
+    "pressure_units": "hPa",
+    "pressure_order": "ascending",
+    "calendar_policy": "modern_gregorian",
+    "hash_inputs": true
+  },
+  "analysis": {"field": "temperature", "start_year": 2000, "end_year": 2020, "months": [12, 1, 2], "weighting": "days"},
+  "output": "/path/to/output/complete_seasons.nc"
+}

@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "climate-base-statistics"
+version = "0.1.0"
+description = "Calendar-aware field regression, trends, and statistical inference"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{name = "RH_Deng"}, {name = "Codex (OpenAI, AI-assisted organization and refactoring)"}]
+dependencies = ["numpy>=1.24", "scipy>=1.10"]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[tool.setuptools.packages.find]
+include = ["climate_statistics*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
