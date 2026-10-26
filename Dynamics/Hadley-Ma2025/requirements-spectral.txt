@@ -1,0 +1,4 @@
+# Optional for --input-kind total. Requires a compatible compiled backend.
+# Alternatively provide compatible skyborn.windspharm in the same environment.
+-r requirements.txt
+windspharm>=2.0.0

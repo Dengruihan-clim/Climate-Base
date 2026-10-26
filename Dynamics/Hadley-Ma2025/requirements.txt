@@ -1,0 +1,7 @@
+# Core calculation, plotting, and NetCDF I/O. Spectral transforms are optional.
+numpy>=1.24
+pandas>=2.0
+xarray>=2023.1
+scipy>=1.10
+matplotlib>=3.7
+h5netcdf>=1.2
