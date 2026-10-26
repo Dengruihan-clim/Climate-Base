@@ -1,0 +1,731 @@
+"""CF Convention metadata registry for climate indices.
+
+Centralizes CF-compliant metadata (long_name, units, references) for
+climate indices, including some without an xarray adapter yet: an entry may
+land ahead of its adapter (see docs/design/fire-subsystem.md), but no
+index adapter ships before its entry. An auxiliary or audit surface that is
+not an index output (for example the fit-diagnostics Dataset) defines its
+per-variable CF metadata beside its adapter instead; such entries are not
+enumerated here. Each entry follows the CF Conventions
+(https://cfconventions.org/) attribute model.
+
+This module is a leaf dependency with no local imports, ensuring it can
+be safely imported by any module without circular dependency risk.
+"""
+
+from __future__ import annotations
+
+from typing import TypedDict
+
+
+class _CFAttributesRequired(TypedDict):
+    """Required CF Convention metadata attributes."""
+
+    long_name: str
+    units: str
+    references: str
+
+
+class CFAttributes(_CFAttributesRequired, total=False):
+    """CF Convention metadata attributes for a climate index.
+
+    Required keys: long_name, units, references.
+    Optional keys: standard_name (only when officially defined in CF
+    conventions), units_metadata (the CF 1.11 temperature-units qualifier,
+    e.g. ``temperature: difference`` for a degree day), description
+    (free-text detail such as value range or a
+    resolved-ambiguity note), climate_indices_variant (distinguishes entries
+    for one index that has more than one output convention, e.g. KBDI's
+    metric and imperial unit scales, or reserves an entry against a future
+    convention, e.g. the CFFWIS moisture codes' `cffwis_classic` against a
+    future FWI2025 variant).
+
+    .. note:: Part of the stable xarray adapter layer. See :doc:`xarray_migration`.
+    """
+
+    standard_name: str
+    units_metadata: str
+    description: str
+    climate_indices_variant: str
+
+
+# The CFFWIS entries share one source publication; keep the rendered
+# `references` text identical across the entries that cite it. DSR is the one
+# exception: Van Wagner (1987) Eq. 31 defines the power transform itself.
+_VAN_WAGNER_PICKETT_1985 = (
+    "Van Wagner, C. E., & Pickett, T. L. (1985). "
+    "Equations and FORTRAN program for the Canadian Forest Fire Weather Index System. "
+    "Canadian Forestry Service, Forestry Technical Report 33."
+)
+_VAN_WAGNER_1987 = (
+    "Van Wagner, C. E. (1987). "
+    "Development and structure of the Canadian Forest Fire Weather Index System. "
+    "Canadian Forestry Service, Forestry Technical Report 35."
+)
+
+# The three Haines elevation variants score different pressure layers of the
+# same 1988 publication; keep the rendered `long_name` and `references` text
+# identical across the three entries that cite it.
+_HAINES_INDEX_LONG_NAME = "Haines Index"
+_HAINES_1988 = (
+    "Haines, D. A. (1988). "
+    "A lower atmospheric severity index for wildland fires. "
+    "National Weather Digest, 13(2), 23-27."
+)
+
+# The six compound statistics name one source publication because the milestone's
+# published reproduction targets its co-occurrence frequency and likelihood
+# multiplication factor (LMF) method (#1366, #1374). Keep the rendered `references`
+# text identical across the entries that cite it. The paper does not define the
+# conditional or response-window frequencies, and it does not validate the module's
+# monthly inference, so no reproduction is committed yet.
+_VIEIRA_PASSOS_2024 = (
+    "Vieira Passos, M., Kan, J.-C., Destouni, G., Barquet, K., & Kalantari, Z. (2024). "
+    "Identifying regional hotspots of heatwaves, droughts, floods, and their co-occurrences. "
+    "Stochastic Environmental Research and Risk Assessment, 38, 3875-3893. "
+    "https://doi.org/10.1007/s00477-024-02783-3"
+)
+
+
+_BYUN_PE_EDI_REFERENCES = (
+    "Byun, H.-R., & Wilhite, D. A. (1999). "
+    "Objective Quantification of Drought Severity and Duration. "
+    "Journal of Climate, 12(9), 2747-2756. "
+    "https://doi.org/10.1175/1520-0442(1999)012<2747:OQODSA>2.0.CO;2; "
+    "Byun, H.-R., & Lee, D.-K. (2002). "
+    "Defining Three Rainy Seasons and the Hydrological Summer Monsoon in Korea "
+    "using Available Water Resources Index. "
+    "Journal of the Meteorological Society of Japan, 80(1), 33-44. "
+    "https://doi.org/10.2151/jmsj.80.33"
+)
+
+
+# SPI and SPEI share each index's citation text across its output variants
+# (z-score, probability, bounded probability); keep the rendered `references`
+# identical across the entries that cite it.
+_SPI_REFERENCES = (
+    "McKee, T. B., Doesken, N. J., & Kleist, J. (1993). "
+    "The relationship of drought frequency and duration to time scales. "
+    "Proceedings of the 8th Conference on Applied Climatology, "
+    "17-22 January, Anaheim, CA. "
+    "American Meteorological Society, Boston, MA, 179-184."
+)
+
+_ZERO_HANDLING_REFERENCES = {
+    "center_of_mass": (
+        "Stagge, J. H., Tallaksen, L. M., Gudmundsson, L., Van Loon, A. F., & Stahl, K. (2015). "
+        "Candidate distributions for climatological drought indices (SPI and SPEI). "
+        "International Journal of Climatology, 35(13), 4027-4040. "
+        "https://doi.org/10.1002/joc.4267"
+    ),
+    "mean_zero": (
+        "Allen, S., & Otero, N. (2024). Calculating standardised indices using SEI. "
+        "The R Journal, 16(4), 102-122, Appendix. "
+        "https://doi.org/10.32614/RJ-2024-038"
+    ),
+}
+
+
+def standardized_output_bounds(output_scale: str = "normal") -> dict[str, float]:
+    """The valid range a standardized index output carries at ``output_scale``."""
+    bounds = {"normal": (-3.09, 3.09), "probability": (0.0, 1.0), "bounded": (-1.0, 1.0)}
+    if output_scale not in bounds:
+        raise ValueError(f"Invalid output_scale argument: {output_scale!r}. Supported values: {', '.join(bounds)}.")
+    valid_min, valid_max = bounds[output_scale]
+    return {"valid_min": valid_min, "valid_max": valid_max}
+
+
+def spi_output_attributes(zero_handling: str, output_scale: str = "normal") -> dict[str, str | float]:
+    """Describe SPI's zero placement and output range across its file surfaces."""
+    references = _SPI_REFERENCES
+    if zero_handling in _ZERO_HANDLING_REFERENCES:
+        references += "; " + _ZERO_HANDLING_REFERENCES[zero_handling]
+    return {"zero_handling": zero_handling, "references": references, **standardized_output_bounds(output_scale)}
+
+
+_SPEI_REFERENCES = (
+    "Vicente-Serrano, S. M., Begueria, S., & Lopez-Moreno, J. I. (2010). "
+    "A Multiscalar Drought Index Sensitive to Global Warming: "
+    "The Standardized Precipitation Evapotranspiration Index. "
+    "Journal of Climate, 23(7), 1696-1718. "
+    "https://doi.org/10.1175/2009JCLI2909.1"
+)
+
+# The energy entries share their source publications (ADR-0019, #1162); keep the
+# rendered `references` text identical across the entries that cite each.
+_C3S_ENERGY_INDICATORS = (
+    "Copernicus Climate Change Service (C3S). "
+    "Global climate and energy indicators from 1950 to present derived from reanalysis. "
+    "https://doi.org/10.24381/3bb607bd"
+)
+_ALLEN_OTERO_2023 = (
+    "Allen, S., & Otero, N. (2023). "
+    "Standardised indices to monitor energy droughts. "
+    "Renewable Energy, 217, 119206. "
+    "https://doi.org/10.1016/j.renene.2023.119206"
+)
+# a degree day is a temperature difference, so CF 1.11 asks for this qualifier
+_TEMPERATURE_DIFFERENCE = "temperature: difference"
+
+CF_METADATA: dict[str, CFAttributes] = {
+    "spi": {
+        "long_name": "Standardized Precipitation Index",
+        "units": "dimensionless",
+        "references": _SPI_REFERENCES,
+    },
+    # the probability-scale variants return the fitted cumulative probability,
+    # not the standard-normal z-score, so they carry distinct long_name/units
+    "spi_probability": {
+        "long_name": "Standardized Precipitation Index probability",
+        "units": "1",
+        "description": (
+            "Fitted cumulative probability of the accumulated precipitation, the "
+            "probability integral transform (PIT) value in [0, 1], before the "
+            "inverse-normal transform."
+        ),
+        "climate_indices_variant": "probability",
+        "references": _SPI_REFERENCES,
+    },
+    "spi_bounded": {
+        "long_name": "Standardized Precipitation Index bounded probability",
+        "units": "1",
+        "description": ("Fitted cumulative probability of the accumulated precipitation mapped to [-1, 1] as 2p - 1."),
+        "climate_indices_variant": "bounded",
+        "references": _SPI_REFERENCES,
+    },
+    "spei": {
+        "long_name": "Standardized Precipitation Evapotranspiration Index",
+        "units": "dimensionless",
+        "references": _SPEI_REFERENCES,
+    },
+    "spei_probability": {
+        "long_name": "Standardized Precipitation Evapotranspiration Index probability",
+        "units": "1",
+        "description": (
+            "Fitted cumulative probability of the accumulated precipitation minus "
+            "PET, the probability integral transform (PIT) value in [0, 1], before "
+            "the inverse-normal transform."
+        ),
+        "climate_indices_variant": "probability",
+        "references": _SPEI_REFERENCES,
+    },
+    "spei_bounded": {
+        "long_name": "Standardized Precipitation Evapotranspiration Index bounded probability",
+        "units": "1",
+        "description": (
+            "Fitted cumulative probability of the accumulated precipitation minus PET mapped to [-1, 1] as 2p - 1."
+        ),
+        "climate_indices_variant": "bounded",
+        "references": _SPEI_REFERENCES,
+    },
+    # the generic seam standardizes whatever series it is handed, so it has no
+    # discipline-specific name or citation; the named recipes (SRI, SSI) supply
+    # their own and rename the result (ADR-0020)
+    "standardized_index": {
+        "long_name": "Standardized index",
+        "units": "1",
+        "description": (
+            "Generic standardization of the caller's series, unitless. On the normal output scale the values are "
+            "clipped to [-3.09, 3.09] as SPI values are; the probability and bounded scales are left as computed. "
+            "Input-agnostic, so it carries no discipline-specific name."
+        ),
+        "references": _SPI_REFERENCES,
+    },
+    "pet_thornthwaite": {
+        "long_name": "Potential Evapotranspiration (Thornthwaite method)",
+        "units": "mm/month",
+        "references": (
+            "Thornthwaite, C. W. (1948). "
+            "An approach toward a rational classification of climate. "
+            "Geographical Review, 38(1), 55-94. "
+            "https://doi.org/10.2307/210739"
+        ),
+    },
+    "pet_hargreaves": {
+        "long_name": "Potential Evapotranspiration (Hargreaves method)",
+        "units": "mm/day",
+        "references": (
+            "Hargreaves, G. H., & Samani, Z. A. (1985). "
+            "Reference crop evapotranspiration from temperature. "
+            "Applied Engineering in Agriculture, 1(2), 96-99. "
+            "https://doi.org/10.13031/2013.26773"
+        ),
+    },
+    "pet_penman_monteith": {
+        "long_name": "Potential Evapotranspiration (FAO-56 Penman-Monteith method)",
+        "units": "mm/day",
+        "references": (
+            "Allen, R. G., Pereira, L. S., Raes, D., & Smith, M. (1998). "
+            "Crop evapotranspiration - Guidelines for computing crop water requirements. "
+            "FAO Irrigation and Drainage Paper 56. Rome, FAO. "
+            "https://www.fao.org/4/x0490e/x0490e00.htm"
+        ),
+    },
+    "percentage_of_normal": {
+        "long_name": "Percent of Normal Precipitation (ratio; 1 = 100%)",
+        "units": "1",
+        "references": (
+            "Willeke, G., Hosking, J. R. M., Wallis, J. R., & Guttman, N. B. (1994). "
+            "The National Drought Atlas. Institute for Water Resources Report 94-NDS-4, "
+            "U.S. Army Corps of Engineers."
+        ),
+    },
+    "pci": {
+        "long_name": "Precipitation Concentration Index",
+        "units": "",
+        "references": (
+            "Oliver, J. E. (1980). "
+            "Monthly precipitation distribution: A comparative index. "
+            "The Professional Geographer, 32(3), 300-309. "
+            "https://doi.org/10.1111/j.0033-0124.1980.00300.x"
+        ),
+    },
+    "pnp": {
+        "long_name": "Percent of Normal Precipitation (ratio; 1 = 100%)",
+        "units": "1",
+        "references": (
+            "Willeke, G., Hosking, J. R. M., Wallis, J. R., & Guttman, N. B. (1994). "
+            "The National Drought Atlas. Institute for Water Resources Report 94-NDS-4, "
+            "U.S. Army Corps of Engineers."
+        ),
+    },
+    "eddi": {
+        "long_name": "Evaporative Demand Drought Index",
+        "units": "dimensionless",
+        "references": (
+            "Hobbins, M. T., Wood, A., McEvoy, D. J., Huntington, J. L., Morton, C., "
+            "Anderson, M., & Hain, C. (2016). "
+            "The Evaporative Demand Drought Index. Part I: Linking Drought Evolution "
+            "to Variations in Evaporative Demand. "
+            "Journal of Hydrometeorology, 17(6), 1745-1761. "
+            "https://doi.org/10.1175/JHM-D-15-0121.1"
+        ),
+    },
+    "pdsi": {
+        "long_name": "Palmer Drought Severity Index",
+        "units": "dimensionless",
+        "references": (
+            "Palmer, W. C. (1965). "
+            "Meteorological Drought. Research Paper No. 45. "
+            "U.S. Department of Commerce, Weather Bureau, Washington, D.C."
+        ),
+    },
+    "phdi": {
+        "long_name": "Palmer Hydrological Drought Index",
+        "units": "dimensionless",
+        "references": (
+            "Palmer, W. C. (1965). "
+            "Meteorological Drought. Research Paper No. 45. "
+            "U.S. Department of Commerce, Weather Bureau, Washington, D.C."
+        ),
+    },
+    "pmdi": {
+        "long_name": "Palmer Modified Drought Index",
+        "units": "dimensionless",
+        "references": (
+            "Heddinghaus, T. R., & Sabol, P. (1991). "
+            "A review of the Palmer Drought Severity Index and where do we go from here? "
+            "Preprints, 7th Conference on Applied Climatology, "
+            "September 10-13, Salt Lake City, UT. "
+            "American Meteorological Society, Boston, MA, 242-246."
+        ),
+    },
+    "z_index": {
+        "long_name": "Palmer Z-Index",
+        "units": "dimensionless",
+        "references": (
+            "Palmer, W. C. (1965). "
+            "Meteorological Drought. Research Paper No. 45. "
+            "U.S. Department of Commerce, Weather Bureau, Washington, D.C."
+        ),
+    },
+    "scpdsi": {
+        "long_name": "Self-calibrated Palmer Drought Severity Index",
+        "units": "dimensionless",
+        "description": (
+            "PDSI with duration factors and the K-prime climate characteristic "
+            "fitted per location instead of the fixed national constants."
+        ),
+        "references": (
+            "Wells, N., Goddard, S., & Hayes, M. J. (2004). "
+            "A Self-Calibrating Palmer Drought Severity Index. "
+            "Journal of Climate, 17(12), 2335-2351. "
+            "https://doi.org/10.1175/1520-0442(2004)017<2335:ASPDSI>2.0.CO;2"
+        ),
+    },
+    # Flood-family metadata precedes the NumPy kernels and xarray adapters (#1103).
+    # These describe flood potential, not observed flooding; none has a CF standard_name.
+    "effective_precipitation": {
+        "long_name": "Effective Precipitation",
+        "units": "mm",
+        "description": "Daily accumulated wetness indicating flood potential, not flooding.",
+        "references": _BYUN_PE_EDI_REFERENCES,
+    },
+    "edi": {
+        "long_name": "Effective Drought Index",
+        "units": "dimensionless",
+        "description": (
+            "Fixed-window standardized effective precipitation anomaly; positive values "
+            "mean above-normal effective precipitation, negative values below-normal. "
+            "May inform flood potential, not flooding."
+        ),
+        "references": _BYUN_PE_EDI_REFERENCES,
+    },
+    "flood_index": {
+        "long_name": "Flood Index",
+        "units": "dimensionless",
+        "description": (
+            "I_F uses harmonic effective precipitation (Moishin et al., 2021); "
+            "the kernel in Deo et al. (2015) is unverified. Indicates flood potential, not flooding."
+        ),
+        "references": (
+            "Deo, R. C., Byun, H.-R., Adamowski, J. F., & Kim, D.-W. (2015). "
+            "A Real-time Flood Monitoring Index Based on Daily Effective Precipitation "
+            "and its Application to Brisbane and Lockyer Valley Flood Events. "
+            "Water Resources Management, 29(11), 4075-4093. "
+            "https://doi.org/10.1007/s11269-015-1046-3; "
+            "Moishin, M., Deo, R. C., Prasad, R., Raj, N., & Abdulla, S. (2021). "
+            "Designing Deep-Based Learning Flood Forecast Model With ConvLSTM Hybrid Algorithm. "
+            "IEEE Access, 9. https://doi.org/10.1109/ACCESS.2021.3065939"
+        ),
+    },
+    "antecedent_precipitation_index": {
+        "long_name": "Antecedent Precipitation Index",
+        "units": "mm",
+        "description": "Daily antecedent wetness indicating flood potential, not flooding.",
+        "references": (
+            "Kohler, M. A., & Linsley, R. K. (1951). "
+            "Predicting the runoff from storm rainfall. "
+            "U.S. Weather Bureau Research Paper No. 34."
+        ),
+    },
+    # Fire-weather indices (#793). Only entries for indices implemented in
+    # `climate_indices.fire` are added here. One entry per output convention:
+    # the Haines Index gets one per elevation variant (#810), because the
+    # variant is chosen per call and decides which pressure levels the output
+    # describes. None of the fire indices has an official CF standard_name.
+    "kbdi": {
+        "long_name": "Keetch-Byram Drought Index",
+        "units": "mm",
+        "description": ("Cumulative soil moisture deficit, metric scale, range [0, 203.2]."),
+        "climate_indices_variant": "metric",
+        "references": (
+            "Keetch, J. J., & Byram, G. M. (1968). "
+            "A Drought Index for Forest Fire Control. "
+            "USDA Forest Service Research Paper SE-38. "
+            "https://research.fs.usda.gov/treesearch/40; "
+            "Alexander, M. E. (1990). "
+            "Computer calculation of the Keetch-Byram Drought Index - "
+            "programmers beware! Fire Management Notes, 51(4), 23-25."
+        ),
+    },
+    "kbdi_imperial": {
+        "long_name": "Keetch-Byram Drought Index",
+        "units": "0.01 in",
+        "description": (
+            "Cumulative soil moisture deficit, imperial scale, hundredths of "
+            "an inch, range [0, 800] — the exact conversion of the metric "
+            "[0, 203.2] mm scale."
+        ),
+        "climate_indices_variant": "imperial",
+        "references": (
+            "Keetch, J. J., & Byram, G. M. (1968). "
+            "A Drought Index for Forest Fire Control. "
+            "USDA Forest Service Research Paper SE-38. "
+            "https://research.fs.usda.gov/treesearch/40; "
+            "Alexander, M. E. (1990). "
+            "Computer calculation of the Keetch-Byram Drought Index - "
+            "programmers beware! Fire Management Notes, 51(4), 23-25."
+        ),
+    },
+    "ffwi": {
+        "long_name": "Fosberg Fire Weather Index",
+        "units": "dimensionless",
+        "description": "Weather-only fire-danger index, conventionally capped at 100.",
+        "references": (
+            "Fosberg, M. A. (1978). "
+            "Weather in wildland fire management: the fire weather index. "
+            "Conference on Sierra Nevada Meteorology, Lake Tahoe, CA, 1-4."
+        ),
+    },
+    "hdw": {
+        "long_name": "Hot-Dry-Windy Index",
+        "units": "hPa m s-1",
+        "description": ("Maximum over the lowest 500 m above ground level of vapor pressure deficit times wind speed."),
+        "references": (
+            "Srock, A. F., Charney, J. J., Potter, B. E., & Goodrick, S. L. (2018). "
+            "The Hot-Dry-Windy Index: A New Fire Weather Index. "
+            "Atmosphere, 9(7), 279. https://doi.org/10.3390/atmos9070279"
+        ),
+    },
+    "ffmc": {
+        "long_name": "Fine Fuel Moisture Code",
+        "units": "dimensionless",
+        "description": (
+            "Moisture content of fine surface litter and other fine fuels, a dimensionless code in [0, 101]."
+        ),
+        "climate_indices_variant": "cffwis_classic",
+        "references": _VAN_WAGNER_PICKETT_1985,
+    },
+    "dmc": {
+        "long_name": "Duff Moisture Code",
+        "units": "dimensionless",
+        "description": (
+            "Moisture content of loosely compacted organic layers of moderate depth, "
+            "a dimensionless code floored at zero with no upper bound."
+        ),
+        "climate_indices_variant": "cffwis_classic",
+        "references": _VAN_WAGNER_PICKETT_1985,
+    },
+    "dc": {
+        "long_name": "Drought Code",
+        "units": "dimensionless",
+        "description": (
+            "Moisture content of deep, compact organic layers, a dimensionless code "
+            "floored at zero with no upper bound; the CFFWIS component only, distinct "
+            "from the package's drought indices."
+        ),
+        "climate_indices_variant": "cffwis_classic",
+        "references": _VAN_WAGNER_PICKETT_1985,
+    },
+    "isi": {
+        "long_name": "Initial Spread Index",
+        "units": "dimensionless",
+        "description": (
+            "Expected rate of fire spread immediately after ignition, dimensionless, "
+            "from the Fine Fuel Moisture Code and the 10 m wind speed."
+        ),
+        "climate_indices_variant": "cffwis_classic",
+        "references": _VAN_WAGNER_PICKETT_1985,
+    },
+    "bui": {
+        "long_name": "Buildup Index",
+        "units": "dimensionless",
+        "description": (
+            "Fuel available for spreading, dimensionless, from the Duff Moisture Code and the Drought Code."
+        ),
+        "climate_indices_variant": "cffwis_classic",
+        "references": _VAN_WAGNER_PICKETT_1985,
+    },
+    "fwi": {
+        "long_name": "Canadian Fire Weather Index",
+        "units": "dimensionless",
+        "description": (
+            "The final CFFWIS output, dimensionless, from the Initial Spread Index "
+            "and the Buildup Index; distinct from the Fosberg Fire Weather Index "
+            "(``ffwi``)."
+        ),
+        "climate_indices_variant": "cffwis_classic",
+        "references": _VAN_WAGNER_PICKETT_1985,
+    },
+    "dsr": {
+        "long_name": "Daily Severity Rating",
+        "units": "dimensionless",
+        "description": (
+            "``0.0272 * FWI ** 1.77`` power transform of the Canadian FWI that makes seasonal averaging meaningful."
+        ),
+        "climate_indices_variant": "cffwis_classic",
+        "references": _VAN_WAGNER_1987,
+    },
+    "haines_low": {
+        "long_name": _HAINES_INDEX_LONG_NAME,
+        "units": "dimensionless",
+        "description": (
+            "Lower-atmosphere severity index, low elevation variant: stability from the "
+            "950-850 hPa lapse rate, moisture from the 850 hPa dewpoint depression; integer in [2, 6]."
+        ),
+        "climate_indices_variant": "low",
+        "references": _HAINES_1988,
+    },
+    "haines_mid": {
+        "long_name": _HAINES_INDEX_LONG_NAME,
+        "units": "dimensionless",
+        "description": (
+            "Lower-atmosphere severity index, mid elevation variant: stability from the "
+            "850-700 hPa lapse rate, moisture from the 850 hPa dewpoint depression; integer in [2, 6]."
+        ),
+        "climate_indices_variant": "mid",
+        "references": _HAINES_1988,
+    },
+    "haines_high": {
+        "long_name": _HAINES_INDEX_LONG_NAME,
+        "units": "dimensionless",
+        "description": (
+            "Lower-atmosphere severity index, high elevation variant: stability from the "
+            "700-500 hPa lapse rate, moisture from the 700 hPa dewpoint depression; integer in [2, 6]."
+        ),
+        "climate_indices_variant": "high",
+        "references": _HAINES_1988,
+    },
+    # Energy-family metadata precedes the NumPy kernels and xarray adapters (#1162).
+    # Names and units follow ADR-0019 and docs/design/energy-subsystem.md. Only HDD,
+    # CDD, and hub-height wind speed have CF standard names (table v95); their
+    # adapters must attach the air_temperature_threshold or height coordinate, and
+    # time bounds, that the names require. The degree-day names describe the
+    # single-base form only: the C3S scheme pairs an activation threshold with a
+    # separate reference temperature, which one base does not reproduce (#1163,
+    # #1164). A degree day is labelled °C day; K d is the same temperature difference.
+    "heating_degree_days": {
+        "long_name": "Heating Degree Days",
+        "standard_name": "integral_wrt_time_of_air_temperature_deficit",
+        "units": "K d",
+        "units_metadata": _TEMPERATURE_DIFFERENCE,
+        "description": (
+            "Base temperature minus daily mean temperature where positive, in °C day; "
+            "the climate-driven component of heating demand, not actual load. The C3S "
+            "scheme pairs an activation threshold with a separate reference temperature."
+        ),
+        "references": _C3S_ENERGY_INDICATORS,
+    },
+    "cooling_degree_days": {
+        "long_name": "Cooling Degree Days",
+        "standard_name": "integral_wrt_time_of_air_temperature_excess",
+        "units": "K d",
+        "units_metadata": _TEMPERATURE_DIFFERENCE,
+        "description": (
+            "Daily mean temperature minus base temperature where positive, in °C day; "
+            "the climate-driven component of cooling demand, not actual load. The C3S "
+            "scheme pairs an activation threshold with a separate reference temperature."
+        ),
+        "references": _C3S_ENERGY_INDICATORS,
+    },
+    "energy_degree_days": {
+        "long_name": "Energy Degree Days",
+        "units": "K d",
+        "units_metadata": _TEMPERATURE_DIFFERENCE,
+        "description": (
+            "Heating plus cooling degree days with separate base temperatures, in °C day; "
+            "the climate-driven component of energy demand, not actual load. The C3S scheme "
+            "pairs each activation threshold with a separate reference temperature."
+        ),
+        "references": _C3S_ENERGY_INDICATORS,
+    },
+    "hub_height_wind_speed": {
+        "long_name": "Hub-Height Wind Speed",
+        "standard_name": "wind_speed",
+        "units": "m s-1",
+        "description": (
+            "Wind speed extrapolated from a reference height to turbine hub height "
+            "by a power-law or logarithmic profile."
+        ),
+        "references": _C3S_ENERGY_INDICATORS,
+    },
+    "wind_capacity_factor": {
+        "long_name": "Wind Capacity Factor",
+        "units": "1",
+        "description": (
+            "Turbine output as a fraction of rated power in [0, 1], from hub-height wind "
+            "speed and a power curve; the climate-driven component of supply, not actual generation."
+        ),
+        "references": _C3S_ENERGY_INDICATORS,
+    },
+    "pv_capacity_factor": {
+        "long_name": "Photovoltaic Capacity Factor",
+        "units": "1",
+        "description": (
+            "Temperature-derated photovoltaic potential as a fraction of nominal capacity, "
+            "from surface solar radiation, air temperature, and wind speed; "
+            "the climate-driven component of supply, not actual generation."
+        ),
+        "references": (
+            "Jerez, S., et al. (2015). "
+            "The impact of climate change on photovoltaic power generation in Europe. "
+            "Nature Communications, 6, 10014. https://doi.org/10.1038/ncomms10014"
+        ),
+    },
+    "srepi": {
+        "long_name": "Standardized Renewable Energy Production Index",
+        "units": "1",
+        "description": (
+            "Standardized renewable production or capacity factor; low values mark "
+            "weaker-than-usual supply. The climate-driven component of supply, not actual generation."
+        ),
+        "references": _ALLEN_OTERO_2023,
+    },
+    "standardized_demand_index": {
+        "long_name": "Standardized Demand Index",
+        "units": "1",
+        "description": (
+            "Standardized energy demand proxy such as energy degree days; high values mark "
+            "higher-than-usual demand. The climate-driven component of demand, not actual load."
+        ),
+        "references": _ALLEN_OTERO_2023,
+    },
+    "srli": {
+        "long_name": "Standardized Residual Load Index",
+        "units": "1",
+        "description": (
+            "Standardized signed residual load, demand minus renewable production; high values "
+            "mark energy-drought conditions. The climate-driven component of load, not actual load."
+        ),
+        "references": _ALLEN_OTERO_2023,
+    },
+    # Compound-family metadata serves the NumPy statistics (#1368, #1369) and
+    # their beta xarray adapters (#1372). Names, units, and bounds
+    # follow ADR-0022 decision 4 and docs/design/compound-module-milestone-1.md.
+    # Every entry is a frequency on one observed, complete-case support, so units
+    # are "1" and no entry has a CF standard name. Counts and quality flags are
+    # defined beside the adapter.
+    "compound_marginal_probability": {
+        "long_name": "Compound Hazard Marginal Frequency",
+        "units": "1",
+        "description": (
+            "Fraction of eligible observed time steps where one selected hazard occurs, in [0, 1]; "
+            "the observed marginal frequency of that hazard, never the declared threshold and never "
+            "1 minus the threshold. Eligible steps are where every selected source was observed."
+        ),
+        "references": _VIEIRA_PASSOS_2024,
+    },
+    "compound_joint_probability": {
+        "long_name": "Compound Hazard Joint Frequency",
+        "units": "1",
+        "description": (
+            "Fraction of eligible observed time steps where every selected hazard occurs, in [0, 1]. "
+            "It counts occupied steps, not independent events per year, so it is a frequency, not a "
+            "return period."
+        ),
+        "references": _VIEIRA_PASSOS_2024,
+    },
+    "compound_independent_probability": {
+        "long_name": "Compound Hazard Independent Frequency Product",
+        "units": "1",
+        "description": (
+            "Product of the observed marginal frequencies of the selected hazards, in [0, 1]. It assumes "
+            "mutual independence for three sources, which is a reference product and not a fitted "
+            "dependence model."
+        ),
+        "references": _VIEIRA_PASSOS_2024,
+    },
+    "compound_likelihood_multiplication_factor": {
+        "long_name": "Compound Hazard Likelihood Multiplication Factor",
+        "units": "1",
+        "description": (
+            "Joint frequency divided by the product of the observed marginal frequencies; nonnegative, "
+            "with valid_min 0 and no universal maximum, so values above 1 are amplification and values "
+            "below 1 are suppression. A zero marginal count makes it undefined (NaN) rather than infinite. "
+            "A value of 1 means the threshold frequencies match the independence product; it does not "
+            "establish independence."
+        ),
+        "references": _VIEIRA_PASSOS_2024,
+    },
+    "compound_conditional_probability": {
+        "long_name": "Compound Hazard Conditional Frequency",
+        "units": "1",
+        "description": (
+            "Fraction of eligible occurrences of the given hazard whose inclusive forward target window "
+            "holds a target-hazard occurrence, in [0, 1]. It counts time steps rather than events or event "
+            "onsets, and it is a lagged association, not a causal cascade or an event-onset probability."
+        ),
+        "references": _VIEIRA_PASSOS_2024,
+    },
+    "compound_response_window_probability": {
+        "long_name": "Compound Hazard Response-Window Frequency",
+        "units": "1",
+        "description": (
+            "Fraction of eligible anchors whose inclusive forward target window holds a target-hazard "
+            "occurrence, in [0, 1]. It is the unconditional comparison on the same anchors as the "
+            "conditional frequency, not a single-step marginal frequency."
+        ),
+        "references": _VIEIRA_PASSOS_2024,
+    },
+}

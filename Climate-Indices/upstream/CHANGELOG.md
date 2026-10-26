@@ -1,0 +1,788 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [3.1.0] - unreleased
+
+### Added
+
+- **Optional Icechunk I/O integration** (`climate_indices.icechunk_io`):
+  `open_icechunk` and `write_icechunk` read and write transactional Icechunk
+  snapshots without changing the core install. The `icechunk>=1.1.21,<2` extra
+  requires Python 3.11 or later and Zarr v3; the base package keeps its Python 3.10
+  support and dependencies. Writes default to `mode="w-"`, which rejects an
+  existing group; `mode="w"` replaces the group in a new snapshot and preserves
+  older snapshots. A write that fails before the commit does not advance the branch.
+  A commit error, such as a timeout, can leave the outcome unknown, so check the
+  branch tip before you retry. The helpers do not merge concurrent sessions or
+  retry conflicts (#1445, #1447, #1450, #1461).
+
+### Changed
+
+- **Stable xarray DataArray index APIs and public adapter interface**: these APIs
+  now promise no breaking interface changes in minor versions (ADR-0012, #1061).
+  This includes index and diagnostic functions that return Datasets. Energy
+  elementwise transforms no longer emit `BetaFeatureWarning`. Numerical algorithms,
+  calendar behavior, and Dask chunk requirements do not change. The compound Dataset
+  routes and eager event catalogs, including `energy.energy_drought_events()`, remain
+  Beta. `BetaFeatureWarning` remains public for existing imports and warning filters.
+
+## [3.0.0] - 2026-10-12
+
+Published on PyPI on 2026-10-12; see the [release notes](docs/release-notes-3.0.0.md)
+for release details and tagged artifacts.
+
+### Added
+
+- **Optional Rust acceleration backend** (`climate_indices._native`): numerical
+  kernels behind SPI, SPEI, the standardized index, EDDI, PNP, PCI, Thornthwaite,
+  Hargreaves and Penman-Monteith PET, Palmer/scPDSI, the fire moisture-code and KBDI
+  recurrences, and the flood family. Python retains validation, warnings, xarray/Dask,
+  metadata, the CLI, and I/O; the backend introduces no public signature, return-type,
+  or exception change. Retained
+  Python implementations are parity oracles at `rtol = atol = 1e-10` with matching
+  NaN positions. Measured deviations, workload-dependent gains, and cases where Rust
+  is not faster are summarized in the [release notes](docs/release-notes-3.0.0.md#optional-rust-backend)
+  (#1271–#1283, #1288, #1298).
+- **Wildfire index family (`climate_indices.fire`)**: a public namespace with the
+  Keetch-Byram Drought Index (KBDI), the CFFWIS moisture codes (FFMC, DMC, DC) and
+  behavior indices (ISI, BUI, `cffwis_fwi`, DSR) including Drought Code overwintering
+  and seasonal carry, the Fosberg Fire Weather Index, the Hot-Dry-Windy Index, and the
+  Haines Index. KBDI, the CFFWIS orchestrator, Hot-Dry-Windy, and Haines ship xarray
+  adapters; the elementwise Fosberg FFWI stays on the NumPy layer, where it has no
+  dimension to reduce and so no adapter; every index has a CF metadata registry entry.
+  `climate_indices --index kbdi` runs KBDI from the command line.
+- **Self-calibrated Palmer Drought Severity Index** (`scpdsi`): duration-factor
+  fitting, order-statistic self-calibration, and correlation-adaptive least-squares
+  fitting, exposed from the Palmer CLI dispatch (#721).
+- **Palmer xarray adapter**: `pdsi()` accepts xarray DataArrays and returns the
+  PDSI-family outputs as a Dataset; `scpdsi()` remains NumPy-only (#1016).
+- **Soil available-water-capacity ingest for Palmer workflows**
+  (`climate_indices.aws_ingest`): loads a registered AWC source, converts it to
+  millimetres of plant-available water over a requested soil column, and harmonizes it
+  onto the climate grid. `aws_mm_to_inches()` converts that millimetre field to the
+  inches the Palmer entry points expect, so the result can be passed as the `awc`
+  argument of `pdsi()` or `palmer.scpdsi()`. Three sources are registered: the USGS
+  gNATSGO depth-weighted raster in mm per metre, POLARIS v1.0 van Genuchten parameters integrated over the
+  requested depth, and a user-supplied STATSGO raster; an unavailable source is
+  reported, never silently substituted. Harmonization area-weights source cells with
+  `cos(latitude)` and never nearest-neighbour samples, remote reads are windowed per
+  latitude strip with retries on transport failure, and `rasterio`/`rioxarray` are
+  declared as the `aws` extra. Palmer itself is unchanged; the AWC field remains an
+  input. `benchmarks/benchmark_pdsi_soils.py` times ingest separately from the scPDSI
+  run, and a provenance-tracked POLARIS AWC fixture covers nine cells of the pinned
+  nClimGrid example grid (#1327).
+- **Validation infrastructure**: `VALIDATION.md` records per-index evidence and known
+  gaps, backed by committed external fixtures: NOAA PSL EDDI reference series (maximum
+  observed error `2.43e-6`), SPEIbase v2.11 SPEI plausibility floors (#779), NOAA NCEI
+  climate-divisional SPI characterization across all 344 divisions, the nClimDiv
+  standard-Palmer comparison (median absolute difference 0.0127), Wells-lineage scPDSI
+  oracle fixtures (`atol=5e-5`), the NRCan CFFWIS reference (`atol=1e-9`), the Keetch
+  & Byram (1968) KBDI Figure 1 record, the Srock et al. (2018) HDW case study, and PET
+  literature worked examples. `pytest -m validation` runs the external checks.
+- **Public `climate_indices.validation` namespace**: the input-preparation and
+  validation checks shared across indices are exported from the package root and
+  documented as public API.
+- **Declared time-major grid blocks**: a three-or-more-dimensional NumPy array runs as
+  a `(time, *cells)` block across SPI, SPEI, EDDI, percentage of normal, PET, PDSI, and
+  `compute.prepare_scaled()` when declared with `spatial_time_major=True`, fitting or
+  ranking every cell in one pass instead of one call per cell (#941, #942).
+- **Zero handling for SPI and `standardized_index()`**: a keyword-only `zero_handling`
+  chooses where a zero accumulation is placed within the probability of zero `p0`:
+  `"classic"` (the default and the existing score, `Φ⁻¹(p0)`), `"center_of_mass"`
+  (`Φ⁻¹(p0 / 2)`, Stagge et al., 2015), or `"mean_zero"` (`−φ(Φ⁻¹(p0)) / p0`, Allen
+  and Otero, 2024). It is accepted by `indices.spi()`, `indices.standardized_index()`,
+  the package-root `spi()`, `compute.fit_and_standardize()`,
+  `compute.transform_fitted_gamma()`, and `compute.transform_fitted_pearson()` for
+  series, legacy 2-D, and declared time-major input. A Pearson Type III fit that falls
+  back to gamma applies the same mode, a moved zero is still clipped to `[-3.09, 3.09]`,
+  and SPEI and EDDI do not take it. The xarray `spi()` rejects an unknown mode when it
+  is called, Dask-backed input included. `compute.transform_fitted_gamma()` also gains a
+  `probabilities_of_zero` argument, the gamma counterpart of the Pearson transform's,
+  and a supplied gamma `alpha` or `beta` that does not broadcast to the values raises
+  `ValueError` rather than an `IndexError` from NumPy. CF metadata and the CLI
+  flag landed in #1187, and the zero-placement tests and guidance in #1188
+  (ADR-0015, #1186).
+- **`CalibrationPeriodClampedWarning`**: the gamma, Pearson Type III and log-logistic
+  fits (`spi()`, `spei()`, `standardized_index()` and the `compute` fitting and transform
+  functions) warn when the record does not cover the requested Calibration Period and
+  the fit uses other years. The warning carries `requested_years` and `effective_years`.
+  Results are unchanged (#1050).
+- **Flood-potential index family (`climate_indices.flood`)**: a public namespace for
+  daily indices of flood potential, not observed flooding. `effective_precipitation()`
+  computes Byun-Wilhite effective precipitation over a fixed window (365 days by
+  default); `edi()` is the fixed-window Effective Drought Index standardized per
+  calendar day; `flood_index()` standardizes effective precipitation against complete
+  annual maxima with a configurable `year_start_month`; and
+  `antecedent_precipitation_index()` is the stateful Kohler-Linsley recursion with
+  spin-up, missing-day, and resumable-state options, returning `APIResult` and
+  `APIState`. The NumPy API is stable; DataArray dispatch is beta and covers PE, EDI,
+  the Flood Index, and API, with CF precipitation-unit conversion to mm, the ADR-0004
+  Gregorian daily calendar, Dask spatial-block execution, complete-annual calibration
+  inference, and CF output metadata. `edi` is re-exported at the package root.
+  EDI uses effective precipitation and is distinct from the Evaporative Demand Drought
+  Index (EDDI), which measures evaporative demand (#1259).
+  `climate_indices --index pe|edi|flood_index|api` runs the family from the CLI, and
+  `--netcdf_pe`/`--var_name_pe` let one effective-precipitation file feed both EDI and
+  the Flood Index. CF metadata is registered for every index, ADR-0013 and ADR-0014
+  record the naming and scientific conventions, and `VALIDATION.md` classifies all four
+  as regression/specification-level evidence with no adopted external numeric oracle.
+  The chained xarray PE-to-EDI/I_F path interpolates PE on a synthetic non-leap
+  February 29 rather than carrying it through the chain, a measured and documented
+  convention (#1103, #1105, #1106, #1107, #1108, #1109, #1110, #1115, #1116, #1117,
+  #1147, #1151).
+- **`flood.flood_events`**: extracts events (runs above a threshold) from a daily
+  flood index, reporting onset, duration, peak, and severity per event.
+- **Flood benchmarks**: `tests/test_benchmark_flood.py` times each Rust-backed flood index
+  against its Python implementation and guards against a Rust path slower than Python.
+- **Log-logistic SPEI**: the Hosking generalized-logistic (GLO) distribution, fitted
+  with unbiased-PWM L-moments, is available on the SPEI surfaces as
+  `Distribution.loglogistic`, `lmoments.fit_glo()`/`fit_glo_spatial()`,
+  `compute.loglogistic_parameters()`/`transform_fitted_loglogistic()`, and
+  `fit_and_standardize()` dispatch. It is SPEI-only: `spi()`, `standardized_index()`,
+  and `fit_diagnostics()` reject it with `InvalidArgumentError` because a non-negative
+  precipitation or streamflow series has a physical zero mass the GLO path does not
+  place yet. `--index spei` (and `all`) now writes an extra `spei_loglogistic_NN.nc`
+  per scale, and the offset P-PET series leaves scale, shape, and standardized values
+  unchanged (ADR-0016, #106, #1211).
+- **Generic `indices.standardized_index()`**: the distribution-fitting pipeline behind
+  `spi()` is public as an input-agnostic NumPy entry point supporting gamma and Pearson
+  Type III, monthly and daily periodicities, supplied `fitting_params`, and declared
+  time-major spatial blocks, so any non-negative series -- runoff or streamflow for
+  SRI/SSI work -- can be standardized with the same calibration, missing-data, and
+  Pearson-to-gamma fall-back behavior as SPI. It is NumPy-only: it is not re-exported
+  at the package root and has no xarray adapter, and log-logistic is rejected pending a
+  zero-placement mode (#1113, #1124).
+- **Probability-scale index output**: `spi()`, `spei()`, `standardized_index()`, the
+  `compute` transform seam, the xarray adapter, and the CLI accept a keyword-only
+  `output_scale`: `"normal"` (the default, `norm.ppf(p)` clipped to `[-3.09, 3.09]`,
+  byte-identical to before), `"probability"` (the fitted cumulative probability, the
+  PIT value in `[0, 1]`, deliberately unclipped), or `"bounded"` (`2p - 1` in
+  `[-1, 1]`). The xarray surface selects scale-specific CF metadata through
+  `cf_metadata_variants`, and the CLI exposes `--output_scale` with per-scale output
+  names and attributes. On probability and bounded scales, non-classic zero
+  handling places zero at `p0 / 2` (#1189, #1192, #1203).
+- **Distribution fit diagnostics**: `compute.FitDiagnostics`/`compute.fit_diagnostics()`
+  and `indices.fit_diagnostics()` audit a fitted distribution per calendar step and per
+  cell, reporting the distribution actually used after the Pearson-to-gamma fall-back,
+  the parameters in the keys `fitting_params` accepts, `prob_zero`, `n_valid`, and the
+  Kolmogorov-Smirnov statistic with its exact p-value. The xarray surface
+  (`climate_indices.fit_diagnostics()`) returns a CF-annotated Dataset with one
+  variable per parameter plus the diagnostics over a `month`/`dayofyear` dimension and
+  the input's cells, keeps Dask lazy, and uses the shared 366-day daily calendar plan.
+  The exact p-value is the dominant gridded cost, and `docs/performance.md` recommends
+  diagnostics on calibration data or selected cells rather than full production grids
+  (#1189, #1190, #1191, #1192, #1202, #1206, #1208).
+- **Run-theory primitive (`climate_indices.runs`)**: `identify_runs()` (1-D NumPy) and
+  `identify_runs_xarray()` (per-cell, Dask-aware) identify runs above or below a
+  threshold. One-dimensional input returns a frozen `RunSet` of parallel
+  `start_index`, `end_index`, `duration`, `magnitude`, `intensity`, `peak_value`,
+  `peak_index`, and `interarrival` arrays; multidimensional input returns an
+  object-dtype `xarray.DataArray` with one `RunSet` per cell. Direction is explicit
+  and never inferred from the threshold's sign, NaN and masked values terminate a run, a value equal to the threshold is not in a run, and
+  `min_duration` filters after identification. The module is public but is not
+  re-exported at the package root (#1154).
+- **FAO-56 Penman-Monteith PET as a first-class method**: `pet_penman_monteith` is
+  exported from the package root with NumPy and xarray overloads, completing the
+  `pm_eto` module that 2.4.0 added. It exposes the Chapter 3 radiation helpers
+  (`extraterrestrial_radiation`, `clear_sky_solar_radiation`,
+  `net_shortwave_radiation`, `net_longwave_radiation`, `net_radiation`,
+  `solar_radiation_from_sunshine`, `solar_radiation_from_temperature_range`),
+  `wind_speed_2m()`, and the derived-input `penman_monteith_eto()` wrapper (Eq. 6). The
+  xarray path adds CF metadata, provenance history, Dask support, the shared
+  January-start daily calendar contract, and an `apply_ufunc` passthrough, with the
+  humidity-path precedence dewpoint -> RHmin/RHmax -> RHmax -> RHmean -> `e0(Tmin - 2)`
+  and radiation precedence supplied Rs -> sunshine hours -> temperature range (Eq. 50).
+  The radiation and wind helpers are validated against FAO-56 Examples 10-16 and the
+  full chain against Example 18 (#766, #1183).
+- **Experimental NetCDF output packing**: `climate_indices --pack` writes each
+  floating-point output variable zlib-compressed, as int16 with a 1e-4 `scale_factor`
+  when every value lies within +/-3.2767 and at most 5e-5 from the computed value, and
+  as float32 otherwise. It is off by default, which keeps the float64 encoding. A PET or
+  PE file that a later index in the same run reads is written unpacked, so the flag never
+  changes computed values; a Dask-backed output is computed twice, once to range its
+  values and once to write them (#1260).
+- **Quick NetCDF map utility**: `scripts/plot_netcdf_map.py` (development tooling, not
+  shipped in the wheel) plots one time slice of a gridded variable from named `--input`
+  and `--var` arguments, and `--compare ncei` plots the matching NCEI nClimGrid SPI or
+  SPEI monthly slice beside it. This is a visual reproduction check, not independent
+  scientific validation (#1261, #1262).
+
+### Changed
+
+- **Release artifacts include optional Rust wheels**: five `cp310-abi3` platform
+  wheels cover Linux (manylinux_2_28 x86-64/aarch64), macOS (arm64/x86-64), and
+  Windows x86-64 on Python 3.10–3.14. A matching platform wheel takes precedence;
+  other platforms use the pure-Python wheel. Hatchling source installs remain
+  pure Python and need no Rust toolchain (ADR-0018, #1283).
+- **Native dispatch and kernel boundary**: the extension accepts a scalar or an array
+  per argument, so scalar constants no longer materialize element buffers, and
+  Penman-Monteith caches station terms and its astronomy terms while the Pearson CDF
+  and K-S statistic are evaluated for all columns in one call. On the committed
+  dispatch harness (medians of 30 timed calls after warm-up), native Penman-Monteith
+  fell from 0.133 to 0.101 ms and Pearson-fitted SPI from 0.848 to 0.330 ms, so
+  Penman-Monteith no longer trails the Python path (Python/native 0.86 to 1.19;
+  Pearson-fitted SPI 1.23 to 3.34). Those measurements predate the review fixes to the
+  cache, operand validation, alignment, and warning routing, and were not rerun against
+  the final reviewed tree. Public signatures, exceptions, warnings, and the
+  `rtol = atol = 1e-10` parity contract are unchanged, and the operand policy is now
+  checked once per call rather than per operand (#1281).
+- **The xarray DataArray API stays Beta through 3.0.0** and is promoted no earlier
+  than 3.1.0, so the interface may still change in a minor release (ADR-0012).
+  Computation results remain identical to the stable NumPy API.
+- **Gridded vectorization**: the xarray adapter's per-cell Python loop is replaced by
+  one NumPy kernel call per `(time, *cells)` block for SPI, SPEI, EDDI, percentage of
+  normal, PET, and PDSI. On the 38x87-cell, 40-year reference grid, serial in-process
+  speedups are 4.4x (SPI), 3.6x (SPEI), 53x (Thornthwaite PET), 342x (EDDI), and
+  111.3x (gridded PDSI, 135.4 s to 1.2 s); computing the SPI goodness-of-fit K-S
+  statistic directly adds ~9.2x on its own. Gamma SPI, EDDI, and percentage of normal
+  are bit-for-bit identical to the serial NumPy API, and Thornthwaite PET and the
+  Pearson Type III fit are asserted at `atol=1e-12` by
+  `tests/test_numerical_equivalence.py`. Reproducible harnesses and committed
+  before/after artifacts live under `benchmarks/` (#818, #921-#944, #1017).
+- **Python 3.14 support**: `requires-python` is now `>=3.10,<3.15`, and CI covers the
+  new version in the test matrix and in wheel smoke tests.
+- **Documentation rebuilt on MyST Markdown** with a four-section reader-need
+  navigation, replacing the previous reStructuredText sources. The xarray/Zarr
+  end-to-end workflow is documented and smoke-executed: canonical calculation path,
+  reproducible inputs, persisted results reopened with complete metadata, maps and
+  selectable-location time series, and the xarray/Zarr, Palmer, EDDI, and Zarr/Dask
+  notebooks. The project overview, flood-applications guide, and core vocabulary now
+  disambiguate flood-family EDI from drought-family EDDI (#1259).
+- **Test suite**: the pattern-compliance source-grep suite is retired, static-data,
+  xarray-metadata, and logging suites are table-driven, the CF-metadata contract and
+  notebook execution have single owners, and a real CLI end-to-end QA suite replaces
+  the mocked Palmer orchestration tests. Palmer oracle sweeps are cached per validation
+  session, `assert_type()` checks are enforced in CI, and assertions are no longer
+  swallowed by `try/except` (#909-#920, #935, #938, #1031, #1033).
+- **CI**: meta checks run outside the version matrix on the minimum supported Python
+  (3.10), validation, lint, docs, notebooks, and the security audit each run once on a
+  single pinned interpreter instead of validation re-running across every version, and
+  the release workflow installs the built wheel on the boundary Pythons.
+- **CLI**: Palmer inputs are converted to the inches `palmer.pdsi()` expects, the PET
+  stage now runs for temperature-only SPEI, scaled, and Palmer runs, and `--scales` is
+  now required for every scaled index (#1002). `"auto"` chunk axes resolve against
+  a 100 MB array chunk budget while the input is opened, and a caller-configured
+  `array.chunk-size` is honored rather than overwritten (#925).
+- **CLI unconsumed arguments**: each index registration declares the arguments it
+  consumes, and a flag provided to an index that does not consume it is now rejected
+  with an error naming the flag and the index instead of being ignored. KBDI and the
+  flood indices' hand-maintained exclusion lists are replaced by that one declaration,
+  and the parser is checked against the registrations (#1225).
+- **Daily scaled-index range**: scale validation is periodicity-aware rather than
+  applying the monthly `[1, 72]` maximum to every series, so daily SPI, SPEI, EDDI, and
+  percentage of normal accept scales in `[1, 2196]` -- the same six-year horizon
+  expressed in 366-day steps -- and a scale longer than the series raises
+  `InsufficientDataError` instead of returning all-NaN output or a longer-than-input
+  array. Periodicities are validated before scales, error messages list
+  periodicity-appropriate common scales, and the xarray sufficiency check counts only
+  populated calendar steps (#1087, #1091).
+- **Calibration-year parameter names unified**: `percentage_of_normal()` now spells its
+  window boundaries `calibration_year_initial`/`calibration_year_final`, matching
+  SPI/SPEI/EDDI/Palmer and the flood indices. The old
+  `calibration_start_year`/`calibration_end_year` keywords are still accepted and emit
+  `ClimateIndicesDeprecationWarning` until their removal in 4.0.0; the CLI keeps the old
+  flags and adds the canonical aliases. PNP xarray output keeps emitting both attribute
+  spellings, so existing consumers are unaffected (#1197).
+
+### Breaking
+
+Six changes alter computed values or exception types without a deprecation period, and
+the console script removed below reaches users without one either: its deprecation
+warning was added during the 3.0.0 cycle and shipped in no release. Each behavioral
+change states what a user sees, how to detect it, and what to change in
+`docs/deprecations/api-changes.md`.
+
+- **Daily xarray calendar alignment**: `spi()`, `spei()`, `eddi()`,
+  `percentage_of_normal()`, and `xarray_adapter.pet_hargreaves()` may return
+  **different, corrected** daily values for any input spanning a non-leap year. The
+  adapter previously passed daily Gregorian values straight into the NumPy core's
+  366-day-per-year layout, silently shifting every value after February 28. Inputs on
+  a supported Gregorian calendar (`standard`, `gregorian`, `proleptic_gregorian`)
+  whose daily coordinates begin on January 1 still succeed, now with corrected
+  numbers; unsupported calendars and other origins raise `CoordinateValidationError`
+  instead of being silently misinterpreted. The NumPy array API is unaffected
+  (ADR-0004).
+- **NumPy gridded input shape guard**: `indices.spi()`, `indices.spei()`, and
+  `compute.prepare_scaled()` read a three-or-more-dimensional NumPy array as a
+  time-major `(time, *cells)` block, and reject the one shape that is ambiguous with a
+  `(years, periods, *cells)` array unless it is declared. Reorder the cell axes so the
+  first one is not a calendar period length, or pass `spatial_time_major=True`, which
+  the package-root `spi()` and `spei()` wrappers accept and pass through (ADR-0009).
+  `indices.eddi()` and `indices.percentage_of_normal()` reject every undeclared
+  three-or-more-dimensional input with `DataShapeError` rather than `ValueError`. For
+  `percentage_of_normal()` that changes the exception type: 2.4.0 passed the 3-D array
+  to `np.convolve` and failed there with numpy's `ValueError`, so a handler catching
+  `ValueError` around it no longer matches. `indices.eddi()` already raised
+  `DataShapeError` in 2.4.0, so only its declared-block path is new.
+- **PCI February correction**: `pci()` returns different values. The cumulative
+  day-of-year boundaries had February written as a month length (28 or 29) instead of
+  its cumulative index, which left the February slice empty and let March absorb
+  February while starting three days early in a non-leap year and two in a leap year.
+  The value moves whenever any of those final three January days (the final two in a
+  leap year) is non-zero, or when February and March both carry rainfall, so recompute
+  PCI values and recalibrate any downstream thresholds tuned against the previous ones
+  (#846).
+- **Periodicity validation type**: the periodicity check shared by
+  `compute.prepare_scaled()`, `compute.transform_fitted_gamma`,
+  `compute.transform_fitted_pearson`, `compute.gamma_parameters()`, and
+  `compute.reshape_values()`, along with the index functions, now raises
+  `PeriodicityError` — a subclass of `InvalidArgumentError`, and not of `ValueError`.
+  Error messages are unchanged, so a handler that catches `ValueError` must be widened
+  to catch `PeriodicityError` or its parent `InvalidArgumentError` from
+  `climate_indices.exceptions`.
+- **Gamma probability of zero from the calibration period**: the gamma transform
+  counted zeros over every year of the record, with missing years in the denominator,
+  while its shape and scale came from the calibration period. It now divides the
+  calibration period's zero count by its non-missing count, as the Pearson Type III fit
+  already did. Classic gamma SPI and `standardized_index()`, gamma SPEI, and SPI whose
+  Pearson fit falls back to gamma can return different values:
+  - at a step with a zero (for SPEI, an exact zero in the offset P − PET series) when
+    the calibration period is shorter than the record, or holds a missing value, which
+    includes the NaN padding of a record that ends partway through a year and the
+    leading `scale − 1` values of a scaled series;
+  - everywhere, zeros or not, when a gamma `fitting_params` already carried `prob_zero`
+    or `probabilities_of_zero`: gamma ignored the key, which now sets the zero mass
+    and must lie in `[0, 1]` and match the values' cells;
+  - at the zeros of a step with no calibration data, which are now NaN rather than an
+    extreme drought.
+
+  A full-record calibration of complete years, at scale 1, with no missing values and
+  no `prob_zero` key is bit-identical, and the NOAA and SPEIbase comparisons are
+  unchanged. `fit_diagnostics()` reports the same calibration-period `prob_zero` for
+  gamma and returns it in `parameters`, and `compute.transform_fitted_gamma()` reads a
+  masked entry as missing (ADR-0015, #1186).
+- **Calibration Period windows the record cannot represent**: a reversed window (start
+  year after end year) now raises `CalibrationPeriodError`, which is both an
+  `InvalidArgumentError` and a `ValueError`, in every index, and `percentage_of_normal()`
+  now rejects any window its record does not cover with the same error. The gamma and
+  Pearson fits (`spi()`, `spei()`, `standardized_index()`, `fit_diagnostics()`) still
+  clamp a window that is not reversed; EDDI and Palmer already rejected both. Before:
+  - a reversed window gave all-NaN when it lay inside the record, and fit some other
+    rows of the record when it ended before it (#1231);
+  - `percentage_of_normal()` gave all-NaN for a reversed window or one that starts after
+    the record, and averaged only the years that exist for a window that ends past the
+    data but is short enough to pass its length check (#1230);
+  - `spi()`, `spei()`, `standardized_index()`, `eddi()` and `percentage_of_normal()`
+    returned an all-missing input before checking its window, so a reversed window (and,
+    for `eddi()` and `percentage_of_normal()`, one the record does not cover) passed
+    unnoticed. The window is now checked first, and a window that passes still returns the
+    missing input unchanged. Palmer, `fit_diagnostics()` and the flood indices already
+    checked it;
+  - a complete `fitting_params` set skipped the window check inside the gamma, Pearson
+    and log-logistic transforms, so `spi()`, `spei()` and `standardized_index()`
+    transformed values for a reversed window. They now check it before the transform,
+    and a window that is not reversed but is not covered still clamps.
+
+  Two more `percentage_of_normal()` changes follow from measuring the window in years
+  rather than 12 steps per year: a window longer than a daily record is now rejected (a
+  4-year window on a 3-year daily record used to pass), and a window that ends in the
+  record's partial final year is now accepted (2000-2010 on 121 monthly values used to
+  raise). A window the record covers returns the same numbers, and the `error_type` of
+  its logged `calculation_failed` event is now `CalibrationPeriodError`.
+
+### Removed
+
+- **`spi` console script**: removed, along with the `climate_indices.__spi__` module.
+  Use `climate_indices --index spi` instead. The deprecation warning was added during
+  the 3.0.0 cycle and shipped in no release, so no released version warned before the
+  removal; 2.4.0 is the last release that ships the script. The `--save_params` and
+  `--load_params` options are retired rather than migrated: fit parameters once with
+  `compute.gamma_parameters()` or `compute.pearson_parameters()` and pass them as a
+  dict — `{"alpha": ..., "beta": ...}` for gamma — to the `fitting_params` argument of
+  `indices.spi()` (#919, #957).
+- **`compute.adjust_calibration_years()`**: removed. It was undocumented and used
+  only inside `compute`; window resolution moved to `climate_indices._calibration_period`
+  (#1214).
+
+### Fixed
+
+- **Pearson Type III fit accuracy at near-zero skew**: the L-moment fit evaluated
+  `gamma(alpha) / gamma(alpha + 0.5)` as `exp(gammaln(alpha) - gammaln(alpha + 0.5))`,
+  which cancels for the large `alpha` of a small L-skewness and lost up to 1.6e-4
+  relative accuracy in the fitted scale. The fit now uses `scipy.special.poch`, and the
+  native kernel a port of Cephes `poch`. Pearson-fitted SPI changes by up to about 2e-5
+  (measured across the 344 nClimDiv divisions at scales 1, 3, and 12), and Pearson-fitted
+  SPEI shares the fit; gamma-fitted output is unchanged.
+- **xarray PET and PCI provenance and alignment**: `pet_hargreaves` and
+  `pet_penman_monteith` now reject a `tmin`/`tmax` (and other time-series) pair whose
+  non-time coordinates differ with `CoordinateValidationError`, as SPEI already did,
+  instead of silently intersecting them and dropping cells; time steps outside the
+  shared range are still trimmed with an `InputAlignmentWarning`, and an empty time
+  intersection now reports the reason `empty_intersection_after_alignment`. Thornthwaite,
+  Hargreaves, and Penman-Monteith output no longer inherits the input's `standard_name`
+  (for example `air_temperature`), and `pci` output keeps the input's `history` and
+  other attributes, appending its own entry in the shared format (#1218).
+- **Palmer**: duration-factor overrides resolve after input validation, masked fitting
+  parameters are treated as missing, fitted coefficients are required to be 12-element
+  vectors, mismatched cell grids are rejected, and per-cell available water capacity
+  pairing is covered by tests (#721, #906, #1016).
+- **Fire**: KBDI percentile window alignment, the Haines xarray adapter's warnings and
+  dtype guard, and the demo manifest input guard (#810, #811).
+- **CLI**: copied chunk sizes are reordered to match the output dimensions and the
+  `h5netcdf` engine is pinned when writing chunked NetCDF output, so `--chunksizes`
+  writes the requested layout under the minimum-dependency environment instead of
+  failing; shared arrays are reset per invocation. The `spi` deprecation migration
+  guidance was corrected (#919).
+- **CLI `--chunksizes input`**: the option was a silent no-op with the `h5netcdf`
+  backend, and a copied chunk size larger than the dimension being written was dropped by
+  the writer, so it was ignored again for inputs carrying an unlimited dimension. Copied
+  input chunk sizes are now trimmed to the shape actually written, with a warning when
+  one is reduced, across the single-output, Palmer, and KBDI writers, and the input file
+  list is de-duplicated without reordering, so which variable's chunks are copied no
+  longer depends on the per-process string hash seed (#1080, #1081, #1084). The eligibility,
+  dimension-match, reorder, and trim rules are documented under `--chunksizes`.
+- **CLI daily input**: a daily input whose coordinates start mid-year or contain a gap is
+  now rejected with the documented daily contract, where it previously restored the input
+  length and wrote silently shifted values. Daily climate-division input is converted with
+  the same calendar plan the grid transport uses instead of being written back
+  unconverted, and time-free companions such as a division latitude are skipped.
+- **`utils` daily calendar plan**: `transform_to_366day` raises `ValueError` rather than
+  `DataShapeError` for input longer than its declared span, an empty array is rejected
+  instead of being accepted as a zero-length partial year, and `DailyCalendarPlan` and
+  `from_year_span` validate their contract on construction rather than clamping a
+  negative or over-capacity length.
+- **CLI input layout**: the shared-array transport accepts only the time-last orders its
+  kernels index — `("division", "time")` for climate divisions, time-last for grids — so
+  a time-major `("time", "division")` or `("time", "lat", "lon")` input is rejected
+  instead of being standardized along the wrong axis and written out with wrong values
+  (#902, #1063). Companion PET and temperature variables are checked against the same
+  orders as the precipitation variable, so an input the run cannot read fails before any
+  handler runs rather than after earlier variables were copied, and every variable's
+  dimensions are confirmed before any of them is copied. The accepted-layout list in that error is
+  built from the layout classifier itself, so it names the `("time",)` time-series order
+  and cannot drift again, and the companion-dimensions message is well-formed.
+- **Typed public API**: the package-root `eddi()` overloads now declare
+  `spatial_time_major`, which the runtime already forwarded, so a typed caller can pass
+  the keyword the documentation describes.
+- **SPI with `Distribution.pearson` on masked or sparse input**: a block with half or more
+  of its cells missing (an ocean mask) came back entirely NaN, where the per-cell API
+  returned finite values, and a single series that was more than half missing did the
+  same. The Pearson-to-gamma fall-back counted input that was already missing as a
+  failed fit, and then fitted gamma to the Pearson result instead of the scaled input.
+  It now judges only the values the fit lost and refits the scaled input, so block,
+  chunked, and per-cell results agree on such grids wherever Pearson fits every valid
+  cell (#1118).
+- **xarray adapter gridded calibration check**: an eager, in-memory grid was checked
+  against a single sampled cell at index `[0, ...]`, so a grid whose first cell was
+  masked (an ocean corner) was rejected even though every other cell had enough
+  calibration data, and a grid whose time dimension wasn't axis 0 crashed with an
+  `IndexError` instead of being checked. The same grid run through Dask skipped the
+  check entirely and computed, so eager and Dask disagreed. The whole-grid sample is
+  dropped: a gridded input no longer runs this preflight check, matching Dask.
+  Neither path enforces a per-cell 30-year non-NaN minimum, so sparse cells can
+  still produce finite results. The in-memory single-series (1-D) check is
+  unchanged (#979, #1156).
+- **Calibration Period past the end of the record**: gamma and Pearson Type III
+  fitting (`spi()`, `standardized_index()`, `fit_diagnostics()` and the `compute`
+  fitting and transform functions) took a record's last year to be one year later than
+  it is. A window running past the data was replaced by that phantom-extended record,
+  and a window ending exactly one year past the data was kept as requested; either way
+  the phantom year counted toward the 30-year minimum, so `ShortCalibrationWarning`
+  never fired for a record shorter than that. Windows now resolve against the true last
+  year, so the warning counts real years and fires. Results are unchanged: a window
+  ending exactly one year past the data still keeps its start and is cut at the last
+  year, and any other window the record does not cover still falls back to the whole
+  record.
+- **Calibration Period resolution has one owner**: `climate_indices._calibration_period`
+  resolves the window for those fits, EDDI and Palmer, and each names whether it clamps
+  or rejects a window the record does not cover. EDDI and Palmer still reject such a
+  window, now with one shared `CalibrationPeriodError` that is both an
+  `InvalidArgumentError` and a `ValueError`, so existing `except` clauses keep working.
+  The message wording is shared, EDDI no longer logs a separate error line before
+  raising, and the `error_type` of the logged `calculation_failed` event is now
+  `CalibrationPeriodError` for both. Reversed windows and percentage of normal's
+  windows are settled separately, under Breaking (#1214, #1230, #1231).
+- **Fits report the Calibration Period they used**: when the record does not cover the
+  requested window, the fit clamps it, but the fit's `distribution_fitting_completed`
+  log event and the xarray result's `calibration_year_initial` and
+  `calibration_year_final` attributes kept naming the requested years, so the years
+  behind the fitted parameters could not be told from the output. They now name the
+  years the fit used. The single-series sample-size preflight (`InsufficientDataError`)
+  reads those years too: a window the record only partly covered was counted on its
+  overlap with the record rather than on the whole record the fit uses, and a window
+  with no overlap at all was rejected as containing no data, where the fit clamps it
+  (#1050).
+- **Pearson-to-gamma fall back**: `spi()` and `standardized_index()` treated any
+  argument error as a failed Pearson Type III fit and silently returned gamma values.
+  A partial or mis-shaped `fitting_params` set is now rejected before the fit, and
+  raises the same `ValueError` in every index regardless of `fallback_to_gamma`, where
+  it previously raised only on the SPEI path; only a genuine fit failure falls back.
+  The shape check also runs for all-missing input, which previously returned before
+  it (#1233).
+  `fit_diagnostics()` no longer reports a fall back for an argument error, a `-W error`
+  run no longer changes which distribution is fitted (the warning propagates instead),
+  and the swap is reported through the public `distribution_fallback` log event rather
+  than a private strategy method (#1215).
+- **CLI output metadata and writes have one owner**: both CLI backends now write
+  through `climate_indices._cli_output`, which sources variable attributes from
+  `CF_METADATA`, stamps the library version and a history entry, and writes to a
+  temporary file that replaces the target only once the whole file is on disk. The
+  shared-array route (SPI, SPEI, percent of normal, Thornthwaite PET, and the Palmer
+  outputs) stops hand-writing long names, units and valid ranges, so its long names,
+  units and references now match the xarray adapters and the registry: PET units are
+  `mm/month` rather than `millimeters`, percent of normal is `Percent of Normal
+  Precipitation` rather than `Percentage of Normal Precipitation, N-month`, and the
+  Palmer Z-Index uses the `z_index` registry entry. A self-calibrated PDSI registry
+  entry (`scpdsi`) is added. Every CLI index now normalizes temperature and
+  precipitation units through `climate_indices._units`, so spellings such as `degC`
+  are accepted by every index, and the `mm/month` PET output is accepted as input to
+  a subsequent monthly run; a per-day rate is rejected for a monthly depth rather
+  than used as a monthly total. The `_OUTPUT_SCALE_ATTRS` and `_OUTPUT_SCALE_LABELS`
+  maps and the hand-written long-name construction are removed (#1223).
+- **`pdsi()` duration-factor override validation**: an override was validated with the
+  Wells-lineage coefficients even though the standard PDSI recursion computes only
+  `c = b / (m + b)`, so a factor set the recursion could use was rejected when the
+  unrelated Wells cross coefficient `dryc = 1 - drym / (drym + wetb)` was not a
+  contraction -- for example `{"wetm": 1.0, "wetb": -0.4, "drym": 0.3, "dryb": 1.0}`.
+  The override is now validated against the coefficients the standard recursion
+  actually uses. The standard PDSI spell recursion also takes a precomputed Z-index
+  series and its own `PdiDurationFactors`, like the scPDSI Wells recursion, instead
+  of recomputing the Z-index mid-recursion. Default-factor PDSI and scPDSI results are
+  unchanged (#1226).
+- **A fitted distribution has one owner**: `compute.FittedDistribution` now resolves a
+  gamma, Pearson Type III or log-logistic fit from the data or from a caller's
+  `fitting_params` in one place -- key normalization, partial-set rejection,
+  period-to-cell broadcasting and the gamma probability of zero included -- and the
+  transforms, `fit_and_standardize()`, the Pearson-to-gamma fall back and
+  `fit_diagnostics()` are compositions over it. The three period-to-cell broadcast
+  helpers and the duplicated partial-parameter check are gone, the goodness-of-fit
+  warnings and the fit diagnostics report the Kolmogorov-Smirnov statistic through one
+  implementation, and `fit_diagnostics()` decides a fall back from the fit outcome
+  rather than discarding a standardized-value transform. A gamma fit now resolves its
+  probability of zero and its missing-data quality check from the same calibration
+  values, so a zero counts as valid there, matching `gamma_parameters()`. Public
+  signatures and fitted values are unchanged (#1216).
+- **CLI shared-array route accepts either dimension order**: the shared-memory route
+  (SPI, SPEI, percent of normal, Thornthwaite PET, and the Palmer outputs) canonicalizes
+  every time-carrying input to the time-last order its kernels index, so a CF-typical
+  `(time, lat, lon)` grid or `(time, division)` division variable is accepted alongside
+  the time-last order, and precipitation in one order can be paired with a companion in
+  the other. This supersedes the time-last-only acceptance noted above: a time-major
+  input, or a time-major companion beside a time-last precipitation variable, was
+  previously rejected with `Invalid dimensions ...` (#1224, #932).
+- **Thornthwaite PET input preservation**: negative temperatures are clamped to zero in
+  an owned array, so a caller's temperature input is never modified, including
+  read-only and spatial arrays; the xarray adapter drops its defensive copies
+  accordingly. NaN handling is unchanged (#1239, #1243).
+- **xarray periodicity and temporal inference**: the adapter no longer infers
+  `data_start_year`/`periodicity` over a call whose arguments fail to bind (a typo'd
+  keyword, for example), so explicit values are not overridden and the binding failure
+  reaches the periodicity seam; and a declared `periodicity` that cannot resolve now
+  raises `PeriodicityError` instead of silently skipping the daily 366-day
+  conversion. Only the separate `_resolve_periodicity` path logs
+  `periodicity_resolution_failed`. A declared default periodicity is honored
+  (#759, #1088, #1090, #1093).
+- **Fire and flood daily recurrences**: the stateful daily xarray adapters share one
+  recurrence runtime, CFFWIS infers latitude from the aligned inputs only when
+  `latitude_degrees_north` is omitted, an already-empty record stays an empty
+  result, and the shared alignment warning is reported at the public call site
+  (#1220, #1222).
+
+### Security
+
+- **Locked dependency updates**: `uv.lock` pins `fsspec` 2026.9.0 for CVE-2026-104851
+  (a transitive dependency through dask) and includes the `jupyterlab`, `tornado`, and
+  `multidict` security updates (#1263, #1264, #1265). Later notebook hardening updates
+  bring the candidate pins to `notebook` 7.6.3 and `jupyterlab` 4.6.4; `tornado` is
+  6.5.10 and `multidict` 6.9.1. Published dependency ranges are unchanged (#1286).
+
+## [2.4.0] - 2026-04-05
+
+### Added
+
+- **Penman-Monteith ETo (FAO-56)**: New module `src/climate_indices/pm_eto.py` implementing
+  the full FAO-56 reference evapotranspiration equation with atmospheric, vapor pressure, and
+  humidity pathway helpers. Validated against FAO-56 worked examples (±0.05 mm/day tolerance).
+- **EDDI public API**: `eddi()` now exported from `climate_indices` with `@overload` signatures
+  in `typed_public_api.py` for both NumPy and xarray DataArray inputs (beta xarray path).
+- **CF metadata registry expansion**: Added entries for `eddi`, `pdsi`, `phdi`, `pmdi`, and
+  `z_index` to `cf_metadata_registry.py` (registry now has 12 entries).
+
+- **NFR-PATTERN-COVERAGE**: 42/42 compliance points achieved — all 7 indices (SPI, SPEI,
+  PET Thornthwaite, PET Hargreaves, PNP, PCI, Palmer) satisfy all 6 canonical patterns
+  (CF metadata, typed public API overloads, xarray adapter, structlog lifecycle,
+  structured exceptions, property-based tests). Validated by `tests/test_pattern_compliance.py`.
+- **xarray DataArray API (Beta)**: Native xarray support for `spi()`, `spei()`,
+  `pet_thornthwaite()`, and `pet_hargreaves()` — marked as beta/experimental.
+  The xarray interface (parameter inference, metadata, coordinate handling) may
+  change in future minor releases. Computation results are identical to the
+  stable NumPy API. No breaking changes in patch versions.
+- **`BetaFeatureWarning`**: New warning class for beta/experimental features
+  (subclass of `ClimateIndicesWarning`)
+- **`ClimateIndicesDeprecationWarning`**: New warning class for deprecated features with dual
+  inheritance from both `ClimateIndicesWarning` and `DeprecationWarning`, enabling
+  filterability by either category. Includes context attributes for deprecation version,
+  removal version, alternative, and migration URL
+- **`emit_deprecation_warning()`**: Helper function for standardized deprecation messages with
+  automatic URL construction and consistent formatting
+- **Docker Support**: Dockerfile for containerized deployment (#586)
+- **`.dockerignore`**: Optimized Docker builds by excluding unnecessary files
+- **PyPI Release Guide**: Comprehensive release documentation (`docs/pypi_release_guide.md`, `docs/pypi_release.rst`)
+- **Floating Point Best Practices Guide**: Documentation for safe numerical comparisons (`docs/floating_point_best_practices.md`)
+- **Test Fixture Management Guide**: Documentation for test data management (`docs/test_fixture_management.md`)
+- **Visualization Notebook**: New notebook for precipitation/SPI visualization (`notebooks/visualize_precip_spi.ipynb`)
+- **Lock File**: Added `uv.lock` for reproducible dependency resolution
+- **Documentation**: Supported Python versions table and deprecation policy in README
+
+### Changed
+
+- **CI/CD**: Enhanced test matrix with Python 3.10-3.13 on Linux and macOS
+- **CI/CD**: Added minimum dependency version testing (`--resolution lowest-direct`)
+- **CI/CD**: Added ruff and mypy checks as CI lint job
+- **CI/CD**: Modernized all GitHub Actions to v4/v5 versions
+- **GitHub Actions**: Updated unit tests workflow with improved configuration
+- **Documentation Index**: Reorganized Sphinx documentation structure
+- **Notebooks**: Improved examples in existing Jupyter notebooks
+
+### Removed
+
+- **`.pypirc`**: Removed from repository (should be user-specific in `~/.pypirc`)
+
+### Notes
+
+- **Palmer xarray wrapper deferred**: `palmer_xarray()` is planned for v2.5.0
+  (shipped as 3.0.0) using Pattern C (stack/unpack workaround for xarray Issue #1815,
+  see `architecture.md`).
+- **NOAA EDDI reference fixtures**: Require manual download; see `tests/fixture/README.md`.
+  The `test_noaa_eddi_reference.py` suite skips gracefully when fixtures are absent.
+
+## [2.3.0] - 2026-02-11
+
+### Added
+
+- **xarray DataArray API (Beta)**: Native xarray support for `spi()`, `spei()`,
+  `pet_thornthwaite()`, and `pet_hargreaves()` — marked as beta/experimental.
+  The xarray interface (parameter inference, metadata, coordinate handling) may
+  change in future minor releases. Computation results are identical to the
+  stable NumPy API. No breaking changes in patch versions.
+- **`BetaFeatureWarning`**: New warning class for beta/experimental features
+  (subclass of `ClimateIndicesWarning`)
+- **`ClimateIndicesDeprecationWarning`**: New warning class for deprecated features with dual
+  inheritance from both `ClimateIndicesWarning` and `DeprecationWarning`, enabling
+  filterability by either category. Includes context attributes for deprecation version,
+  removal version, alternative, and migration URL
+- **`emit_deprecation_warning()`**: Helper function for standardized deprecation messages with
+  automatic URL construction and consistent formatting
+- **Docker Support**: Dockerfile for containerized deployment (#586)
+- **`.dockerignore`**: Optimized Docker builds by excluding unnecessary files
+- **PyPI Release Guide**: Comprehensive release documentation (`docs/pypi_release_guide.md`, `docs/pypi_release.rst`)
+- **Floating Point Best Practices Guide**: Documentation for safe numerical comparisons (`docs/floating_point_best_practices.md`)
+- **Test Fixture Management Guide**: Documentation for test data management (`docs/test_fixture_management.md`)
+- **Visualization Notebook**: New notebook for precipitation/SPI visualization (`notebooks/visualize_precip_spi.ipynb`)
+- **Lock File**: Added `uv.lock` for reproducible dependency resolution
+- **Documentation**: Supported Python versions table and deprecation policy in README
+
+### Changed
+
+- **CI/CD**: Enhanced test matrix with Python 3.10-3.13 on Linux and macOS
+- **CI/CD**: Added minimum dependency version testing (`--resolution lowest-direct`)
+- **CI/CD**: Added ruff and mypy checks as CI lint job
+- **CI/CD**: Modernized all GitHub Actions to v4/v5 versions
+- **GitHub Actions**: Updated unit tests workflow with improved configuration
+- **Documentation Index**: Reorganized Sphinx documentation structure
+- **Notebooks**: Improved examples in existing Jupyter notebooks
+
+### Removed
+
+- **`.pypirc`**: Removed from repository (should be user-specific in `~/.pypirc`)
+
+## [2.2.0] - 2025-08-03
+
+### Added
+
+- **Exception-Based Error Handling**: New robust exception hierarchy for distribution fitting failures
+  - `DistributionFittingError` (base class)  
+  - `InsufficientDataError` - raised when too few non-zero values for statistical fitting
+  - `PearsonFittingError` - raised when L-moments calculation fails
+- **Migration Guide**: Comprehensive v2.2.0 migration documentation in README
+- **Code Quality Improvements**: Safe floating point comparison guidelines using `numpy.isclose()`
+- **Enhanced Test Coverage**: Comprehensive tests for exception handling and fallback behavior
+- **Documentation**: 
+  - Floating point best practices guide (`docs/floating_point_best_practices.md`)
+  - Working examples for safe numerical comparisons
+  - Updated build configuration documentation
+
+### Changed
+
+- **Major Dependency Updates**: Updated all packages to latest versions
+  - `scipy>=1.15.3` (from 1.14.1) - requires Python 3.10+
+  - `dask>=2025.7.0`, `xarray>=2025.6.1`, `h5netcdf>=1.6.3`
+  - `pytest>=8.4.1`, `ruff>=0.12.7`, `sphinx>=8.1.3`
+- **Build System**: Consolidated and optimized hatch build configuration
+  - Reduced package size from 37MB to 207KB (99.4% reduction)
+  - Eliminated duplicate exclude lists between sdist and wheel builds
+- **Error Handling Architecture**: 
+  - Replaced `None` tuple anti-pattern with explicit exceptions
+  - Consolidated fallback logic into `DistributionFallbackStrategy` class
+  - Improved error messages with detailed context and suggestions
+- **Python Version Support**: Dropped Python 3.9, now requires Python 3.10+
+- **Floating Point Comparisons**: Replaced direct equality checks with `numpy.isclose()` throughout test suite
+
+### Fixed
+
+- **NumPy 2.0 Compatibility**: 
+  - Fixed deprecated `newshape` parameter usage
+  - Fixed array-to-scalar conversion warnings
+- **Consecutive Zero Precipitation**: Enhanced handling of extensive zero precipitation patterns
+- **Test Reliability**: Improved floating point comparison robustness in test assertions
+- **Build Exclusions**: Properly exclude development files from distribution packages
+
+### Technical Improvements
+
+- **Code Quality**: Addressed `python:S1244` floating point equality issues
+- **Test Architecture**: Enhanced coverage for edge cases and error conditions
+- **Logging**: Consistent warning messages for high failure rates in distribution fitting
+- **Documentation**: Clear upgrade path for library integrators using internal functions
+
+## [2.1.1] - 2025-01-15
+
+### Added
+
+- **`DistributionFallbackStrategy` class**: Centralized fallback logic for Pearson→Gamma distribution fallbacks
+- **Custom exception hierarchy**: `DistributionFittingError`, `InsufficientDataError`, `PearsonFittingError`
+- **Comprehensive test coverage**: New test case for distribution fallback strategy consolidation
+
+### Changed
+
+- **Error handling architecture**: Replaced `None` tuple anti-pattern with explicit exception-based error handling
+- **Fallback logic**: Consolidated scattered Pearson→Gamma fallback code into single strategy class
+- **Logging**: Standardized warning messages for distribution fitting failures
+
+### Fixed
+
+- **Type safety**: Improved error propagation with typed exceptions instead of implicit `None` checks
+- **Code maintainability**: Simplified control flow by eliminating complex `None` checking logic
+
+## [2.0.0] - 2023-07-15
+
+### Added
+
+- GitHub Action workflow which performs unit testing on the four supported versions of Python (3.8, 3.9, 3.10, and 3.11)
+
+### Fixed
+
+- L-moments-related errors (#512)
+- Various cleanups and formatting indentations
+
+### Changed
+
+- Build and dependency management now using poetry instead of setuptools
+- Documentation around installation with examples (#521) 
+
+### Removed
+
+- Palmer indices (these were always half-baked and nobody ever showed any interest in developing them further)
+- Numba integration (see [this discussion](https://github.com/monocongo/climate_indices/discussions/502#discussioncomment-6377732)
+  for context)
+- requirements.txt (dependencies now specified solely in pyproject.toml)
+- setup.py (now using poetry as the build tool)
+
+[3.1.0]: https://github.com/monocongo/climate_indices/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/monocongo/climate_indices/compare/v2.4.0...v3.0.0
+[2.2.0]: https://github.com/monocongo/climate_indices/compare/v2.1.1...v2.2.0
+[2.1.1]: https://github.com/monocongo/climate_indices/compare/v2.0.0...v2.1.1
+[2.0.0]: https://github.com/monocongo/climate_indices/releases/tag/v2.0.0

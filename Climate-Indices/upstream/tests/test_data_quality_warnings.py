@@ -1,0 +1,639 @@
+"""Tests for data quality warning system (Story 1.4).
+
+This module tests the warning system that alerts researchers to data quality
+issues without blocking computation. Tests cover warning class hierarchy,
+attribute storage, filterability, and emission conditions.
+"""
+
+from __future__ import annotations
+
+import warnings
+
+import numpy as np
+import pytest
+import scipy.special
+import scipy.stats
+
+from climate_indices import ClimateIndicesWarning, compute
+from climate_indices.exceptions import (
+    GoodnessOfFitWarning,
+    MissingDataWarning,
+    ShortCalibrationWarning,
+)
+
+
+class TestWarningHierarchy:
+    """Test warning class inheritance structure."""
+
+    def test_climate_indices_warning_inherits_from_user_warning(self) -> None:
+        """ClimateIndicesWarning should inherit from UserWarning."""
+        assert issubclass(ClimateIndicesWarning, UserWarning)
+
+    def test_missing_data_warning_inherits_from_base(self) -> None:
+        """MissingDataWarning should inherit from ClimateIndicesWarning."""
+        assert issubclass(MissingDataWarning, ClimateIndicesWarning)
+
+    def test_short_calibration_warning_inherits_from_base(self) -> None:
+        """ShortCalibrationWarning should inherit from ClimateIndicesWarning."""
+        assert issubclass(ShortCalibrationWarning, ClimateIndicesWarning)
+
+    def test_goodness_of_fit_warning_inherits_from_base(self) -> None:
+        """GoodnessOfFitWarning should inherit from ClimateIndicesWarning."""
+        assert issubclass(GoodnessOfFitWarning, ClimateIndicesWarning)
+
+
+class TestWarningAttributes:
+    """Test warning attribute storage and access."""
+
+    def test_missing_data_warning_stores_ratio_and_threshold(self) -> None:
+        """MissingDataWarning should store missing_ratio and threshold."""
+        warning = MissingDataWarning("test message", missing_ratio=0.35, threshold=0.20)
+        assert warning.missing_ratio == pytest.approx(0.35)
+        assert warning.threshold == pytest.approx(0.20)
+
+    def test_missing_data_warning_handles_none_attributes(self) -> None:
+        """MissingDataWarning should allow None for optional attributes."""
+        warning = MissingDataWarning("test message")
+        assert warning.missing_ratio is None
+        assert warning.threshold is None
+
+    def test_short_calibration_warning_stores_years(self) -> None:
+        """ShortCalibrationWarning should store actual_years and required_years."""
+        warning = ShortCalibrationWarning("test message", actual_years=25, required_years=30)
+        assert warning.actual_years == 25
+        assert warning.required_years == 30
+
+    def test_short_calibration_warning_handles_none_attributes(self) -> None:
+        """ShortCalibrationWarning should allow None for optional attributes."""
+        warning = ShortCalibrationWarning("test message")
+        assert warning.actual_years is None
+        assert warning.required_years is None
+
+    def test_goodness_of_fit_warning_stores_distribution_info(self) -> None:
+        """GoodnessOfFitWarning should store distribution fitting details."""
+        warning = GoodnessOfFitWarning(
+            "test message",
+            distribution_name="gamma",
+            p_value=0.02,
+            threshold=0.05,
+            poor_fit_count=5,
+            total_steps=12,
+        )
+        assert warning.distribution_name == "gamma"
+        assert warning.p_value == pytest.approx(0.02)
+        assert warning.threshold == pytest.approx(0.05)
+        assert warning.poor_fit_count == 5
+        assert warning.total_steps == 12
+
+    def test_goodness_of_fit_warning_handles_none_attributes(self) -> None:
+        """GoodnessOfFitWarning should allow None for optional attributes."""
+        warning = GoodnessOfFitWarning("test message")
+        assert warning.distribution_name is None
+        assert warning.p_value is None
+        assert warning.threshold is None
+        assert warning.poor_fit_count is None
+        assert warning.total_steps is None
+
+
+class TestWarningFilterability:
+    """Test warning suppression via warnings.filterwarnings()."""
+
+    def test_can_suppress_all_climate_indices_warnings(self) -> None:
+        """Filtering by ClimateIndicesWarning should suppress all library warnings."""
+        with warnings.catch_warnings(record=True) as warning_list:
+            warnings.simplefilter("always")
+            warnings.filterwarnings("ignore", category=ClimateIndicesWarning)
+
+            warnings.warn(MissingDataWarning("test missing", missing_ratio=0.3, threshold=0.2))  # noqa: B028
+            warnings.warn(ShortCalibrationWarning("test short", actual_years=20, required_years=30))  # noqa: B028
+            warnings.warn(GoodnessOfFitWarning("test fit", distribution_name="gamma"))  # noqa: B028
+
+            assert len(warning_list) == 0
+
+    def test_can_suppress_specific_warning_type(self) -> None:
+        """Filtering by specific warning type should suppress only that type."""
+        with warnings.catch_warnings(record=True) as warning_list:
+            warnings.simplefilter("always")
+            warnings.filterwarnings("ignore", category=MissingDataWarning)
+
+            warnings.warn(MissingDataWarning("test missing", missing_ratio=0.3, threshold=0.2))  # noqa: B028
+            warnings.warn(ShortCalibrationWarning("test short", actual_years=20, required_years=30))  # noqa: B028
+
+            # only ShortCalibrationWarning should be recorded
+            assert len(warning_list) == 1
+            assert issubclass(warning_list[0].category, ShortCalibrationWarning)
+
+    def test_warnings_not_suppressed_by_default(self) -> None:
+        """Warnings should be emitted when not explicitly filtered."""
+        with warnings.catch_warnings(record=True) as warning_list:
+            warnings.simplefilter("always")
+
+            warnings.warn(MissingDataWarning("test missing", missing_ratio=0.3, threshold=0.2))  # noqa: B028
+
+            assert len(warning_list) == 1
+            assert issubclass(warning_list[0].category, MissingDataWarning)
+
+
+class TestMissingDataWarning:
+    """Test MissingDataWarning emission in gamma and pearson paths."""
+
+    def test_gamma_parameters_warns_on_excessive_missing_data(self) -> None:
+        """gamma_parameters should warn when >20% of calibration data is missing."""
+        # create dataset with 30% missing data in calibration period
+        values = np.random.gamma(2, 2, size=(50, 12))
+        # set 30% of values to NaN
+        mask = np.random.rand(50, 12) < 0.30
+        values[mask] = np.nan
+
+        with pytest.warns(MissingDataWarning) as warning_info:
+            compute.gamma_parameters(
+                values,
+                data_start_year=1970,
+                calibration_start_year=1970,
+                calibration_end_year=2019,
+                periodicity=compute.Periodicity.monthly,
+            )
+
+        assert len(warning_info) >= 1
+        warning = warning_info[0].message
+        assert warning.missing_ratio > 0.20
+        assert warning.threshold == pytest.approx(0.20)
+
+    def test_gamma_parameters_no_warn_below_threshold(self) -> None:
+        """gamma_parameters should not warn when missing data is below threshold."""
+        # create dataset with 10% missing data
+        values = np.random.gamma(2, 2, size=(50, 12))
+        mask = np.random.rand(50, 12) < 0.10
+        values[mask] = np.nan
+
+        with warnings.catch_warnings(record=True) as warning_list:
+            warnings.simplefilter("always")
+            compute.gamma_parameters(
+                values,
+                data_start_year=1970,
+                calibration_start_year=1970,
+                calibration_end_year=2019,
+                periodicity=compute.Periodicity.monthly,
+            )
+
+            # filter to only MissingDataWarning
+            missing_warnings = [w for w in warning_list if issubclass(w.category, MissingDataWarning)]
+            assert len(missing_warnings) == 0
+
+    def test_gamma_parameters_counts_zeros_as_valid_not_missing(self) -> None:
+        """gamma_parameters should not count zero precipitation as missing data."""
+        # create dataset with many zeros (valid for precipitation)
+        values = np.random.gamma(2, 2, size=(50, 12))
+        # set 30% to zero (valid data, not missing)
+        zero_mask = np.random.rand(50, 12) < 0.30
+        values[zero_mask] = 0.0
+
+        with warnings.catch_warnings(record=True) as warning_list:
+            warnings.simplefilter("always")
+            compute.gamma_parameters(
+                values,
+                data_start_year=1970,
+                calibration_start_year=1970,
+                calibration_end_year=2019,
+                periodicity=compute.Periodicity.monthly,
+            )
+
+            # zeros should not trigger missing data warning
+            missing_warnings = [w for w in warning_list if issubclass(w.category, MissingDataWarning)]
+            assert len(missing_warnings) == 0
+
+    def test_pearson_parameters_warns_on_excessive_missing_data(self) -> None:
+        """pearson_parameters should warn when >20% of calibration data is missing."""
+        values = np.random.randn(50, 12)
+        # set 30% of values to NaN
+        mask = np.random.rand(50, 12) < 0.30
+        values[mask] = np.nan
+
+        with pytest.warns(MissingDataWarning) as warning_info:
+            compute.pearson_parameters(
+                values,
+                data_start_year=1970,
+                calibration_start_year=1970,
+                calibration_end_year=2019,
+                periodicity=compute.Periodicity.monthly,
+            )
+
+        assert len(warning_info) >= 1
+        warning = warning_info[0].message
+        assert warning.missing_ratio > 0.20
+
+
+class TestShortCalibrationWarning:
+    """Test ShortCalibrationWarning emission for calibration periods <30 years."""
+
+    def test_gamma_parameters_warns_on_short_calibration(self) -> None:
+        """gamma_parameters should warn when calibration period is <30 years."""
+        values = np.random.gamma(2, 2, size=(25, 12))
+
+        with pytest.warns(ShortCalibrationWarning) as warning_info:
+            compute.gamma_parameters(
+                values,
+                data_start_year=1990,
+                calibration_start_year=1990,
+                calibration_end_year=2014,  # 25 years
+                periodicity=compute.Periodicity.monthly,
+            )
+
+        assert len(warning_info) >= 1
+        warning = warning_info[0].message
+        assert warning.actual_years == 25
+        assert warning.required_years == 30
+
+    def test_gamma_parameters_no_warn_at_exactly_30_years(self) -> None:
+        """gamma_parameters should not warn when calibration is exactly 30 years."""
+        values = np.random.gamma(2, 2, size=(30, 12))
+
+        with warnings.catch_warnings(record=True) as warning_list:
+            warnings.simplefilter("always")
+            compute.gamma_parameters(
+                values,
+                data_start_year=1990,
+                calibration_start_year=1990,
+                calibration_end_year=2019,  # 30 years
+                periodicity=compute.Periodicity.monthly,
+            )
+
+            # filter to only ShortCalibrationWarning
+            short_warnings = [w for w in warning_list if issubclass(w.category, ShortCalibrationWarning)]
+            assert len(short_warnings) == 0
+
+    def test_gamma_parameters_no_warn_above_30_years(self) -> None:
+        """gamma_parameters should not warn when calibration exceeds 30 years."""
+        values = np.random.gamma(2, 2, size=(50, 12))
+
+        with warnings.catch_warnings(record=True) as warning_list:
+            warnings.simplefilter("always")
+            compute.gamma_parameters(
+                values,
+                data_start_year=1970,
+                calibration_start_year=1970,
+                calibration_end_year=2019,  # 50 years
+                periodicity=compute.Periodicity.monthly,
+            )
+
+            short_warnings = [w for w in warning_list if issubclass(w.category, ShortCalibrationWarning)]
+            assert len(short_warnings) == 0
+
+    def test_pearson_parameters_warns_on_short_calibration(self) -> None:
+        """pearson_parameters should warn when calibration period is <30 years."""
+        values = np.random.randn(20, 12)
+
+        with pytest.warns(ShortCalibrationWarning) as warning_info:
+            compute.pearson_parameters(
+                values,
+                data_start_year=1995,
+                calibration_start_year=1995,
+                calibration_end_year=2014,  # 20 years
+                periodicity=compute.Periodicity.monthly,
+            )
+
+        assert len(warning_info) >= 1
+        warning = warning_info[0].message
+        assert warning.actual_years == 20
+
+
+class TestGoodnessOfFitWarning:
+    """Test GoodnessOfFitWarning emission when distribution fit is poor."""
+
+    def test_gamma_parameters_warns_on_poor_fit(self) -> None:
+        """gamma_parameters should warn when KS test indicates poor gamma fit."""
+        # create data that poorly fits gamma (uniform distribution mixed with gamma)
+        np.random.seed(123)
+        # use uniform distribution which should not fit gamma well
+        values = np.random.uniform(0.1, 10, size=(40, 12))
+
+        with warnings.catch_warnings(record=True) as warning_list:
+            warnings.simplefilter("always")
+            compute.gamma_parameters(
+                values,
+                data_start_year=1980,
+                calibration_start_year=1980,
+                calibration_end_year=2019,
+                periodicity=compute.Periodicity.monthly,
+            )
+
+            # check if goodness-of-fit warning was emitted
+            fit_warnings = [w for w in warning_list if issubclass(w.category, GoodnessOfFitWarning)]
+            # this is a soft test - uniform data should often produce poor fit
+            # but we allow for cases where it doesn't by checking attributes if present
+            if len(fit_warnings) > 0:
+                warning = fit_warnings[0].message
+                assert warning.distribution_name == "gamma"
+                assert warning.threshold == pytest.approx(0.05)
+                assert warning.poor_fit_count > 0
+                assert warning.total_steps == 12
+
+    def test_gamma_parameters_no_warn_on_good_fit(self) -> None:
+        """gamma_parameters should not warn when gamma fit is good."""
+        # create data that fits gamma well
+        np.random.seed(42)
+        values = np.random.gamma(2, 2, size=(50, 12))
+
+        with warnings.catch_warnings(record=True) as warning_list:
+            warnings.simplefilter("always")
+            compute.gamma_parameters(
+                values,
+                data_start_year=1970,
+                calibration_start_year=1970,
+                calibration_end_year=2019,
+                periodicity=compute.Periodicity.monthly,
+            )
+
+            fit_warnings = [w for w in warning_list if issubclass(w.category, GoodnessOfFitWarning)]
+            # good fit should produce no warnings (or very few)
+            assert len(fit_warnings) == 0
+
+    def test_goodness_of_fit_warning_aggregates_across_time_steps(self) -> None:
+        """GoodnessOfFitWarning should aggregate poor fits to avoid warning floods."""
+        # create data with some poor fits
+        values_good = np.random.gamma(2, 2, size=(40, 6))
+        values_poor = np.random.exponential(2, size=(40, 6))
+        values = np.hstack([values_good, values_poor])
+
+        with warnings.catch_warnings(record=True) as warning_list:
+            warnings.simplefilter("always")
+            compute.gamma_parameters(
+                values,
+                data_start_year=1980,
+                calibration_start_year=1980,
+                calibration_end_year=2019,
+                periodicity=compute.Periodicity.monthly,
+            )
+
+            fit_warnings = [w for w in warning_list if issubclass(w.category, GoodnessOfFitWarning)]
+            # should emit at most one aggregated warning, not 12 separate warnings
+            assert len(fit_warnings) <= 1
+
+    def test_pearson_parameters_warns_on_poor_fit(self) -> None:
+        """pearson_parameters should warn for a clearly poor Pearson Type III fit."""
+        rng = np.random.default_rng(42)
+        values = np.where(
+            rng.random((60, 12)) < 0.5, rng.uniform(0.1, 0.5, (60, 12)), rng.uniform(90.0, 100.0, (60, 12))
+        )
+
+        with warnings.catch_warnings(record=True) as warning_list:
+            warnings.simplefilter("always")
+            compute.pearson_parameters(
+                values,
+                data_start_year=1960,
+                calibration_start_year=1960,
+                calibration_end_year=2019,
+                periodicity=compute.Periodicity.monthly,
+            )
+
+        fit_warnings = [w for w in warning_list if issubclass(w.category, GoodnessOfFitWarning)]
+        assert len(fit_warnings) == 1
+        warning = fit_warnings[0].message
+        assert warning.distribution_name == "pearson3"
+        assert warning.poor_fit_count == 12
+        assert warning.total_steps == 12
+
+
+class TestCalculationsCompleteWithWarnings:
+    """Test that calculations complete successfully despite warnings."""
+
+    def test_gamma_parameters_returns_valid_results_with_warnings(self) -> None:
+        """gamma_parameters should return valid results even when warnings are emitted."""
+        # create dataset that triggers multiple warnings
+        values = np.random.gamma(2, 2, size=(25, 12))  # short calibration
+        mask = np.random.rand(25, 12) < 0.25  # missing data
+        values[mask] = np.nan
+
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            alphas, betas = compute.gamma_parameters(
+                values,
+                data_start_year=1995,
+                calibration_start_year=1995,
+                calibration_end_year=2019,
+                periodicity=compute.Periodicity.monthly,
+            )
+
+        # results should be valid despite warnings
+        assert alphas.shape == (12,)
+        assert betas.shape == (12,)
+        assert np.all(np.isfinite(alphas) | np.isnan(alphas))
+        assert np.all(np.isfinite(betas) | np.isnan(betas))
+
+    def test_pearson_parameters_returns_valid_results_with_warnings(self) -> None:
+        """pearson_parameters should return valid results even when warnings are emitted."""
+        values = np.random.randn(20, 12)  # short calibration
+        mask = np.random.rand(20, 12) < 0.25  # missing data
+        values[mask] = np.nan
+
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            probs, locs, scales, skews = compute.pearson_parameters(
+                values,
+                data_start_year=2000,
+                calibration_start_year=2000,
+                calibration_end_year=2019,
+                periodicity=compute.Periodicity.monthly,
+            )
+
+        # results should be valid despite warnings
+        assert probs.shape == (12,)
+        assert locs.shape == (12,)
+        assert scales.shape == (12,)
+        assert skews.shape == (12,)
+
+    def test_warnings_are_suppressible_during_computation(self) -> None:
+        """Users should be able to suppress warnings during index computation."""
+        values = np.random.gamma(2, 2, size=(25, 12))
+
+        # suppress all climate indices warnings
+        with warnings.catch_warnings(record=True) as warning_list:
+            warnings.simplefilter("always")
+            warnings.filterwarnings("ignore", category=ClimateIndicesWarning)
+
+            compute.gamma_parameters(
+                values,
+                data_start_year=1995,
+                calibration_start_year=1995,
+                calibration_end_year=2019,
+                periodicity=compute.Periodicity.monthly,
+            )
+
+            # no climate indices warnings should be recorded
+            climate_warnings = [w for w in warning_list if issubclass(w.category, ClimateIndicesWarning)]
+            assert len(climate_warnings) == 0
+
+
+class TestKolmogorovSmirnovParity:
+    """Test that the direct K-S implementation matches scipy.stats.kstest.
+
+    The goodness-of-fit check computes its D statistic directly instead of calling
+    scipy.stats.kstest, whose dispatch overhead dominated SPI runtime. These tests
+    pin that the substitution is numerically exact and reaches the same poor-fit
+    decision, including for samples with a varying number of valid values.
+    """
+
+    def test_gamma_goodness_of_fit_matches_kstest_for_float32(self) -> None:
+        """Gamma goodness-of-fit should preserve SciPy's float32 threshold decision."""
+        values = np.full((2, 1), np.float32(0.012090744), dtype=np.float32)
+        alpha = beta = np.array([0.1], dtype=np.float32)
+        expected_p_value = scipy.stats.kstest(
+            values[:, 0],
+            lambda x: scipy.stats.gamma.cdf(x, a=alpha[0], scale=beta[0]),
+        ).pvalue
+        assert expected_p_value < compute.GOODNESS_OF_FIT_P_VALUE_THRESHOLD
+
+        with warnings.catch_warnings(record=True) as warning_list:
+            warnings.simplefilter("always")
+            compute._check_goodness_of_fit_gamma(values, alpha, beta)
+
+        fit_warnings = [w for w in warning_list if issubclass(w.category, GoodnessOfFitWarning)]
+        assert len(fit_warnings) == 1
+        assert fit_warnings[0].message.poor_fit_count == 1
+
+    def test_ks_poor_fit_p_value_matches_kstest_for_float16(self) -> None:
+        """Direct K-S should preserve SciPy's float16 threshold decision."""
+        values = np.array([1, 2], dtype=np.float16)
+        cdf_values = np.full(2, scipy.stats.kstwo.isf(0.04999, 2))
+        expected_p_value = scipy.stats.kstest(values, lambda _: cdf_values).pvalue
+        actual = compute._ks_poor_fit_p_value(values, cdf_values)
+
+        assert (actual is not None) == (expected_p_value < compute.GOODNESS_OF_FIT_P_VALUE_THRESHOLD)
+        if actual is not None:
+            assert actual == float(expected_p_value)
+
+    def test_ks_poor_fit_p_value_matches_kstest_at_critical_value(self) -> None:
+        """Direct K-S should defer to SciPy when D equals the critical value."""
+        values = np.arange(4, dtype=float)
+        cdf_values = np.full(4, scipy.stats.kstwo.isf(compute.GOODNESS_OF_FIT_P_VALUE_THRESHOLD, 4))
+        expected_p_value = scipy.stats.kstest(values, lambda _: cdf_values).pvalue
+        actual = compute._ks_poor_fit_p_value(values, cdf_values)
+
+        assert (actual is not None) == (expected_p_value < compute.GOODNESS_OF_FIT_P_VALUE_THRESHOLD)
+
+    def test_ks_poor_fit_p_value_matches_kstest_with_float32_critical_rounding(self) -> None:
+        """Direct K-S should defer to SciPy within float32 precision of the critical value."""
+        sample_size = 30
+        critical_value = scipy.stats.kstwo.isf(compute.GOODNESS_OF_FIT_P_VALUE_THRESHOLD, sample_size)
+        target = np.maximum(
+            np.arange(1, sample_size + 1) / sample_size - (critical_value - 2.2e-8),
+            1e-10,
+        )
+        values = scipy.stats.gamma.ppf(target, a=2.0).astype(np.float32)
+        cdf_values = scipy.special.gammainc(2.0, values.astype(float))
+        expected_p_value = scipy.stats.kstest(values, lambda x: scipy.stats.gamma.cdf(x, a=2.0)).pvalue
+        actual = compute._ks_poor_fit_p_value(values, cdf_values)
+
+        assert (actual is not None) == (expected_p_value < compute.GOODNESS_OF_FIT_P_VALUE_THRESHOLD)
+
+    def test_ks_poor_fit_p_value_matches_kstest_with_float32_rank_rounding(self) -> None:
+        """Direct K-S should defer to SciPy within float32 rank-rounding precision."""
+        sample_size = 33
+        critical_value = scipy.stats.kstwo.isf(compute.GOODNESS_OF_FIT_P_VALUE_THRESHOLD, sample_size)
+        tolerance = np.spacing(np.asarray(critical_value, dtype=np.float32))
+        target = np.maximum(
+            np.arange(1, sample_size + 1) / sample_size - (critical_value - 2.45 * tolerance),
+            1e-20,
+        )
+        values = scipy.stats.gamma.ppf(target, a=2.0).astype(np.float32)
+        cdf_values = scipy.special.gammainc(2.0, values.astype(float))
+        expected_p_value = scipy.stats.kstest(values, lambda _: cdf_values).pvalue
+        actual = compute._ks_poor_fit_p_value(values, cdf_values)
+
+        assert (actual is not None) == (expected_p_value < compute.GOODNESS_OF_FIT_P_VALUE_THRESHOLD)
+
+    def test_ks_poor_fit_p_value_matches_kstest_for_gamma(self) -> None:
+        """Direct K-S should match scipy.stats.kstest on gamma-fitted samples."""
+        rng = np.random.default_rng(42)
+
+        for trial in range(60):
+            sample_size = int(rng.integers(8, 60))
+            shape = float(rng.uniform(0.5, 6.0))
+            scale = float(rng.uniform(2.0, 50.0))
+            if trial % 3 == 0:
+                # wrong family, so a poor fit is reached often
+                values = rng.normal(shape * scale, scale, sample_size)
+                values = values[values > 0]
+            else:
+                values = rng.gamma(shape, scale, sample_size)
+            if values.size < 4:
+                continue
+
+            _, expected_p_value = scipy.stats.kstest(
+                values,
+                lambda x, a=shape, s=scale: scipy.stats.gamma.cdf(x, a=a, scale=s),
+            )
+            sorted_values = np.sort(values)
+            actual = compute._ks_poor_fit_p_value(
+                sorted_values,
+                scipy.special.gammainc(shape, sorted_values / scale),
+            )
+
+            expected_poor = expected_p_value < compute.GOODNESS_OF_FIT_P_VALUE_THRESHOLD
+            assert (actual is not None) == expected_poor
+            if actual is not None:
+                np.testing.assert_allclose(actual, expected_p_value, atol=1e-12)
+
+    def test_ks_poor_fit_p_value_matches_kstest_for_pearson3(self) -> None:
+        """Direct K-S should match scipy.stats.kstest on Pearson Type III samples."""
+        rng = np.random.default_rng(42)
+
+        for trial in range(60):
+            sample_size = int(rng.integers(8, 60))
+            skew = float(rng.uniform(-1.5, 2.5))
+            loc = float(rng.uniform(10.0, 60.0))
+            scale = float(rng.uniform(2.0, 30.0))
+            if trial % 3 == 0:
+                values = rng.uniform(0.0, 120.0, sample_size)
+            else:
+                values = scipy.stats.pearson3.rvs(skew, loc=loc, scale=scale, size=sample_size, random_state=rng)
+            values = values[np.isfinite(values)]
+            if values.size < 4:
+                continue
+
+            _, expected_p_value = scipy.stats.kstest(
+                values,
+                lambda x, sk=skew, lc=loc, sc=scale: scipy.stats.pearson3.cdf(x, sk, loc=lc, scale=sc),
+            )
+            sorted_values = np.sort(values)
+            actual = compute._ks_poor_fit_p_value(
+                sorted_values,
+                scipy.stats.pearson3.cdf(sorted_values, skew, loc=loc, scale=scale),
+            )
+
+            expected_poor = expected_p_value < compute.GOODNESS_OF_FIT_P_VALUE_THRESHOLD
+            assert (actual is not None) == expected_poor
+            if actual is not None:
+                np.testing.assert_allclose(actual, expected_p_value, atol=1e-12)
+
+    def test_ks_poor_fit_p_value_returns_none_for_good_fit(self) -> None:
+        """A well-fitting sample should report no poor fit."""
+        rng = np.random.default_rng(42)
+        values = np.sort(rng.gamma(2.0, 20.0, 400))
+
+        assert compute._ks_poor_fit_p_value(values, scipy.special.gammainc(2.0, values / 20.0)) is None
+
+    def test_gamma_parameters_warns_on_clearly_poor_fit(self) -> None:
+        """A sample far from gamma should still emit GoodnessOfFitWarning."""
+        rng = np.random.default_rng(42)
+        # strongly bimodal values do not fit a gamma distribution
+        values = np.where(
+            rng.random((60, 12)) < 0.5, rng.uniform(0.1, 0.5, (60, 12)), rng.uniform(90.0, 100.0, (60, 12))
+        )
+
+        with warnings.catch_warnings(record=True) as warning_list:
+            warnings.simplefilter("always")
+            compute.gamma_parameters(
+                values,
+                data_start_year=1960,
+                calibration_start_year=1960,
+                calibration_end_year=2019,
+                periodicity=compute.Periodicity.monthly,
+            )
+
+        fit_warnings = [w for w in warning_list if issubclass(w.category, GoodnessOfFitWarning)]
+        assert len(fit_warnings) == 1
+        warning = fit_warnings[0].message
+        assert warning.distribution_name == "gamma"
+        assert warning.poor_fit_count == 12
+        assert warning.total_steps == 12

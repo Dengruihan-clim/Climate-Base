@@ -1,0 +1,578 @@
+"""Tests for the CLI's per-index registrations in ``climate_indices.__main__``.
+
+Each ``--index`` value maps onto a pipeline of registered indices, and each
+registered index declares its own validation, kernel, and output. These tests
+pin that wiring: the registrations the pipelines name, the order an aggregate
+runs them in, and that a runner reaches the registrations directly rather than
+through monkeypatched dispatch.
+"""
+
+import argparse
+import logging
+
+import numpy as np
+import pytest
+import xarray as xr
+
+from climate_indices import __main__ as cli_main
+from climate_indices import _cli_transport, compute, indices
+from climate_indices.__main__ import DatasetLayout
+
+# the --index values the CLI accepts, in the order they are offered
+_EXPECTED_INDEX_CHOICES = (
+    "spi",
+    "spei",
+    "pnp",
+    "scaled",
+    "pet",
+    "palmers",
+    "kbdi",
+    "pe",
+    "edi",
+    "flood_index",
+    "api",
+    "hdd",
+    "cdd",
+    "edd",
+    "wind_profile",
+    "srepi",
+    "demand_index",
+    "srli",
+    "all",
+)
+
+# the indices that compute through the shared-memory arrays, with one kernel each
+_SHARED_ARRAY_INDICES = ("spi", "spei", "pnp", "pet", "palmers")
+
+
+def test_pipelines_cover_the_index_choices():
+    assert tuple(cli_main._INDEX_PIPELINES) == _EXPECTED_INDEX_CHOICES
+
+
+@pytest.mark.parametrize(
+    ("layout", "accepted"),
+    [
+        # a grid variable may arrive time-last or time-major; copy_in transposes
+        # the latter to the time-last order the kernels index, and the
+        # per-location companion has no time dimension
+        (DatasetLayout.GRID, (("lat", "lon", "time"), ("time", "lat", "lon"), ("lat", "lon"))),
+        # a division variable likewise may arrive time-last or time-major
+        (DatasetLayout.DIVISIONS, (("division", "time"), ("time", "division"), ("division",))),
+        (DatasetLayout.TIMESERIES, (("time",),)),
+    ],
+)
+def test_accepted_dimensions_are_the_orders_the_transport_reads(layout, accepted):
+    """The shared-array gate accepts every order the transport can canonicalize."""
+    assert _cli_transport.accepted_dimensions(layout) == accepted
+
+
+def test_registry_covers_every_pipeline_member():
+    for pipeline, names in cli_main._INDEX_PIPELINES.items():
+        for name in names:
+            assert name in cli_main._INDEX_REGISTRY, f"{pipeline} runs an unregistered index: {name}"
+            assert cli_main._INDEX_REGISTRY[name].index == name
+
+
+def test_consumers_of_computed_pet_run_it_first():
+    # each pipeline that accepts a temperature input in place of a PET file
+    # computes PET before the index that consumes it
+    assert cli_main._INDEX_PIPELINES["spei"] == ("pet", "spei")
+    assert cli_main._INDEX_PIPELINES["scaled"] == ("spi", "pet", "spei", "pnp")
+    assert cli_main._INDEX_PIPELINES["palmers"] == ("pet", "palmers")
+    assert cli_main._INDEX_PIPELINES["all"] == ("spi", "pet", "spei", "pnp", "palmers")
+
+
+@pytest.mark.parametrize(
+    "index",
+    (
+        "spi",
+        "spei",
+        "pnp",
+        "pet",
+        "palmers",
+        "kbdi",
+        "pe",
+        "edi",
+        "flood_index",
+        "api",
+        "hdd",
+        "cdd",
+        "edd",
+        "wind_profile",
+        "srepi",
+        "demand_index",
+        "srli",
+    ),
+)
+def test_each_registration_declares_its_runner(index):
+    registration = cli_main._registry_for(index)
+
+    assert registration.run.__name__ == f"_run_{index}"
+    assert registration.input_paths
+
+
+@pytest.mark.parametrize("index", _SHARED_ARRAY_INDICES)
+def test_shared_array_indices_declare_their_kernel(index):
+    registration = cli_main._registry_for(index)
+
+    assert registration.kernel is not None
+    assert registration.worker is not None
+    assert registration.input_array_keys is not None
+    assert registration.build_arguments is not None
+    assert registration.compute is not None
+    assert registration.write is not None
+
+
+def test_kbdi_computes_through_xarray_only():
+    registration = cli_main._registry_for("kbdi")
+
+    assert registration.kernel is None
+    assert registration.compute is None
+    assert registration.write is None
+    assert registration.run is cli_main._run_kbdi
+
+
+def test_handlers_for_index_returns_registrations_in_pipeline_order():
+    handlers = cli_main._handlers_for_index("scaled")
+
+    assert [handler.index for handler in handlers] == ["spi", "pet", "spei", "pnp"]
+    assert handlers[0] is cli_main._registry_for("spi")
+
+
+def test_unsupported_index_is_rejected():
+    with pytest.raises(ValueError) as error:
+        cli_main._handlers_for_index("bogus")
+
+    assert str(error.value) == "Unsupported index: 'bogus'"
+
+
+def test_process_climate_indices_runs_the_pipeline_in_order(monkeypatch):
+    """An --index value runs its registered indices, rather than a chain of ifs."""
+    calls: list[tuple[str, DatasetLayout]] = []
+
+    def _recorder(name: str) -> cli_main._IndexRegistration:
+        def _run(arguments: argparse.Namespace, input_type: DatasetLayout, _transport) -> None:
+            calls.append((name, input_type))
+
+        return cli_main._IndexRegistration(index=name, run=_run)
+
+    monkeypatch.setattr(
+        cli_main,
+        "_INDEX_REGISTRY",
+        {name: _recorder(name) for name in cli_main._INDEX_REGISTRY},
+    )
+    monkeypatch.setattr(cli_main, "_validate_args", lambda _arguments: DatasetLayout.TIMESERIES)
+
+    cli_main.process_climate_indices(argparse.Namespace(index="all", multiprocessing="single"))
+
+    assert calls == [(name, DatasetLayout.TIMESERIES) for name in ("spi", "pet", "spei", "pnp", "palmers")]
+
+
+def test_requests_carry_only_the_inputs_their_index_declares():
+    """An index's request never carries companion inputs it does not read."""
+    arguments = argparse.Namespace(
+        output_file_base="out",
+        periodicity=compute.Periodicity.monthly,
+        chunksizes="input",
+        calibration_start_year=1980,
+        calibration_end_year=2010,
+        netcdf_precip="precip.nc",
+        var_name_precip="precip",
+        netcdf_temp="temp.nc",
+        var_name_temp="temp",
+        netcdf_pet="pet.nc",
+        var_name_pet="pet",
+        netcdf_awc="awc.nc",
+        var_name_awc="awc",
+    )
+
+    request = cli_main._IndexRequest.from_arguments(arguments, index="spi", input_type=DatasetLayout.DIVISIONS)
+
+    assert (request.netcdf_precip, request.var_name_precip) == ("precip.nc", "precip")
+    assert (request.netcdf_temp, request.var_name_temp) == (None, None)
+    assert (request.netcdf_pet, request.var_name_pet) == (None, None)
+    assert (request.netcdf_awc, request.var_name_awc) == (None, None)
+
+
+def test_temperature_only_spei_computes_and_consumes_pet(monkeypatch):
+    """A temperature-only SPEI run computes PET and feeds its output to SPEI."""
+    requests: list[cli_main._IndexRequest] = []
+
+    def _record(request: cli_main._IndexRequest, _transport) -> tuple[str, str]:
+        requests.append(request)
+        return ("out_pet.nc", "pet")
+
+    monkeypatch.setattr(cli_main, "_compute_write_index", _record)
+    monkeypatch.setattr(cli_main, "_validate_args", lambda _arguments: DatasetLayout.TIMESERIES)
+    arguments = argparse.Namespace(
+        index="spei",
+        multiprocessing="single",
+        periodicity=compute.Periodicity.monthly,
+        chunksizes="input",
+        scales=[1],
+        calibration_start_year=None,
+        calibration_end_year=None,
+        netcdf_precip="precip.nc",
+        var_name_precip="precip",
+        netcdf_temp="temp.nc",
+        var_name_temp="temp",
+        netcdf_pet=None,
+        var_name_pet=None,
+        output_file_base="out",
+    )
+
+    cli_main.process_climate_indices(arguments)
+
+    # every SPEI distribution but empirical and beta, which only standardized_index()
+    # takes (#1168, #1169)
+    assert [request.index for request in requests] == ["pet"] + ["spei"] * 3
+    assert [request.distribution for request in requests[1:]] == [
+        indices.Distribution.gamma,
+        indices.Distribution.pearson,
+        indices.Distribution.loglogistic,
+    ]
+    assert requests[0].var_name_precip is None
+    assert all(request.netcdf_pet == "out_pet.nc" for request in requests[1:])
+    assert arguments.netcdf_pet == "out_pet.nc"
+
+
+def test_pet_index_computes_pet_when_a_pet_file_is_also_provided(monkeypatch):
+    """--index pet computes PET from temperature rather than skipping the run."""
+    requests: list[cli_main._IndexRequest] = []
+
+    def _record(request: cli_main._IndexRequest, _transport) -> tuple[str, str]:
+        requests.append(request)
+        return ("out_pet.nc", "pet")
+
+    monkeypatch.setattr(cli_main, "_compute_write_index", _record)
+    monkeypatch.setattr(cli_main, "_validate_args", lambda _arguments: DatasetLayout.TIMESERIES)
+    arguments = argparse.Namespace(
+        index="pet",
+        multiprocessing="single",
+        periodicity=compute.Periodicity.monthly,
+        chunksizes="input",
+        calibration_start_year=None,
+        calibration_end_year=None,
+        netcdf_temp="temp.nc",
+        var_name_temp="temp",
+        netcdf_pet="provided_pet.nc",
+        var_name_pet="pet",
+        output_file_base="out",
+    )
+
+    cli_main.process_climate_indices(arguments)
+
+    assert [request.index for request in requests] == ["pet"]
+    assert arguments.netcdf_pet == "out_pet.nc"
+
+
+def test_temperature_derived_pet_requires_monthly_periodicity():
+    """A daily temperature input is rejected rather than fed to Thornthwaite PET."""
+    arguments = argparse.Namespace(
+        periodicity=compute.Periodicity.daily,
+        netcdf_temp="temp.nc",
+        var_name_temp="temp",
+        netcdf_pet=None,
+        var_name_pet=None,
+    )
+    context = cli_main._InputContext(
+        input_type=DatasetLayout.TIMESERIES,
+        dimensions=("time",),
+        times=np.array([0]),
+    )
+
+    with pytest.raises(ValueError) as error:
+        cli_main._validate_pet_or_temperature_input(arguments, context)
+
+    assert str(error.value) == "Invalid periodicity argument for PET: 'daily' -- only 'monthly' is supported"
+
+
+def test_result_array_is_reallocated_when_the_output_shape_changes(monkeypatch):
+    """A reused result buffer is reallocated when an index's output shape differs."""
+    monkeypatch.setattr(cli_main, "_parallel_process", lambda *_args, **_kwargs: None)
+    transport = _cli_transport.Transport(1)
+    transport.allocate(_cli_transport.RESULT_ARRAY_KEY, (1, 12))
+    request = cli_main._IndexRequest(
+        index="spi",
+        output_file_base="out",
+        input_type=DatasetLayout.DIVISIONS,
+        periodicity=compute.Periodicity.monthly,
+        chunksizes="none",
+    )
+    context = cli_main._ComputeContext(
+        request=request,
+        dataset=xr.Dataset(),
+        output_dims=("time", "division"),
+        output_shape=(12, 1),
+        output_encodings=None,
+        output_engine=None,
+        arguments={},
+        transport=transport,
+    )
+
+    cli_main._compute_single_array(context)
+
+    assert transport.shape(_cli_transport.RESULT_ARRAY_KEY) == (12, 1)
+
+
+def test_aggregate_index_requires_the_scales_its_members_need(monkeypatch):
+    """`all` includes scaled indices, so it requires --scales like they do."""
+    time = xr.date_range("1990-01-01", periods=12, freq="MS")
+    coords = {"division": ["0101"], "time": time}
+    datasets = {
+        "precip.nc": xr.Dataset({"precip": (("division", "time"), np.ones((1, 12)))}, coords=coords),
+        "pet.nc": xr.Dataset({"pet": (("division", "time"), np.ones((1, 12)))}, coords=coords),
+        "awc.nc": xr.Dataset({"awc": (("division",), [4.0])}, coords={"division": ["0101"]}),
+    }
+    monkeypatch.setattr(cli_main.xr, "open_dataset", datasets.__getitem__)
+    arguments = argparse.Namespace(
+        index="all",
+        periodicity=compute.Periodicity.monthly,
+        scales=None,
+        calibration_start_year=1990,
+        calibration_end_year=1991,
+        netcdf_precip="precip.nc",
+        var_name_precip="precip",
+        netcdf_temp=None,
+        var_name_temp=None,
+        netcdf_pet="pet.nc",
+        var_name_pet="pet",
+        netcdf_awc="awc.nc",
+        var_name_awc="awc",
+    )
+
+    with pytest.raises(ValueError) as error:
+        cli_main._validate_args(arguments)
+
+    assert str(error.value) == (
+        "Scaled indices (SPI, SPEI, and/or PNP) specified without "
+        "including one or more time scales (missing --scales argument)"
+    )
+
+
+def test_aggregate_output_scale_warns_for_outputs_that_ignore_it(monkeypatch, caplog):
+    """`scaled` applies --output_scale only to SPI/SPEI, so warn about the PNP/PET outputs."""
+    time = xr.date_range("1990-01-01", periods=12, freq="MS")
+    coords = {"division": ["0101"], "time": time}
+    datasets = {
+        "precip.nc": xr.Dataset({"precip": (("division", "time"), np.ones((1, 12)))}, coords=coords),
+        "pet.nc": xr.Dataset({"pet": (("division", "time"), np.ones((1, 12)))}, coords=coords),
+    }
+    monkeypatch.setattr(cli_main.xr, "open_dataset", datasets.__getitem__)
+    arguments = argparse.Namespace(
+        index="scaled",
+        periodicity=compute.Periodicity.monthly,
+        scales=[6],
+        calibration_start_year=1990,
+        calibration_end_year=1991,
+        netcdf_precip="precip.nc",
+        var_name_precip="precip",
+        netcdf_temp=None,
+        var_name_temp=None,
+        netcdf_pet="pet.nc",
+        var_name_pet="pet",
+        netcdf_awc=None,
+        var_name_awc=None,
+        output_scale="probability",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        cli_main._validate_args(arguments)
+
+    assert "--output_scale argument does not apply" in caplog.text
+    assert "pnp" in caplog.text
+
+
+def test_every_index_specific_argument_is_declared_by_a_registration():
+    """The parser's arguments are checked against the registrations' declarations."""
+    parser = cli_main._build_parser()
+    consumed = set().union(*(registration.consumed_flags for registration in cli_main._INDEX_REGISTRY.values()))
+
+    for action in parser._actions:
+        if action.dest in cli_main._UNIVERSAL_FLAGS or action.dest == "help":
+            continue
+        assert action.dest in consumed, f"--{action.dest} is not declared by any registration"
+
+
+def test_registrations_declare_only_known_arguments():
+    """A registration's consumed flags all name real command line arguments."""
+    known = {action.dest for action in cli_main._build_parser()._actions}
+
+    for registration in cli_main._INDEX_REGISTRY.values():
+        assert registration.consumed_flags <= known, registration.index
+
+
+def test_each_registration_declares_exactly_the_flags_it_consumes():
+    """Over-declaration is a defect too: a flag declared here but not read is silently accepted."""
+    precip = frozenset({"netcdf_precip", "var_name_precip"})
+    temperature = frozenset({"netcdf_temp", "var_name_temp"})
+    pet = frozenset({"netcdf_pet", "var_name_pet"})
+    awc = frozenset({"netcdf_awc", "var_name_awc"})
+    pe = frozenset({"netcdf_pe", "var_name_pe"})
+    calibration = frozenset({"calibration_start_year", "calibration_end_year"})
+    scales = frozenset({"scales"})
+    wind = frozenset({"netcdf_wind", "var_name_wind"})
+    values = frozenset({"netcdf_values", "var_name_values"})
+    expected = {
+        "spi": precip | calibration | scales,
+        "spei": precip | temperature | pet | calibration | scales,
+        "pnp": precip | calibration | scales,
+        "pet": temperature,
+        "palmers": precip | temperature | pet | awc | calibration,
+        "kbdi": precip | temperature | frozenset({"kbdi_units", "kbdi_initial"}),
+        "pe": precip,
+        "edi": precip | pe | calibration,
+        "flood_index": precip | pe | calibration | frozenset({"year_start_month"}),
+        "api": precip | frozenset({"api_k"}),
+        "hdd": temperature | frozenset({"heating_base_temperature"}),
+        "cdd": temperature | frozenset({"cooling_base_temperature"}),
+        "edd": temperature | frozenset({"heating_base_temperature", "cooling_base_temperature"}),
+        "wind_profile": wind
+        | frozenset({"reference_height", "hub_height", "wind_profile_method", "wind_shear_alpha", "roughness_length"}),
+        "srepi": values | calibration | scales,
+        "demand_index": values | calibration | scales,
+        "srli": values | calibration | scales,
+    }
+
+    assert {name: registration.consumed_flags for name, registration in cli_main._INDEX_REGISTRY.items()} == expected
+
+
+# one argument each --index value does not consume; API owns --api_k, so it gets
+# the unconsumed --scales instead
+_UNCONSUMED_ARGUMENTS = {
+    # --kbdi_units is declared by KBDI only, so its None default is what makes
+    # this detectable
+    "spi": ("--kbdi_units", "imperial"),
+    "spei": ("--api_k", "0.9"),
+    "pnp": ("--api_k", "0.9"),
+    "scaled": ("--api_k", "0.9"),
+    "pet": ("--api_k", "0.9"),
+    "palmers": ("--api_k", "0.9"),
+    "kbdi": ("--api_k", "0.9"),
+    "pe": ("--api_k", "0.9"),
+    "edi": ("--api_k", "0.9"),
+    "flood_index": ("--api_k", "0.9"),
+    "api": ("--scales", "1"),
+    "hdd": ("--api_k", "0.9"),
+    "cdd": ("--api_k", "0.9"),
+    "edd": ("--api_k", "0.9"),
+    "wind_profile": ("--api_k", "0.9"),
+    "srepi": ("--api_k", "0.9"),
+    "demand_index": ("--api_k", "0.9"),
+    "srli": ("--api_k", "0.9"),
+    "all": ("--api_k", "0.9"),
+}
+
+
+@pytest.mark.parametrize(("index", "argument"), _UNCONSUMED_ARGUMENTS.items())
+def test_unconsumed_argument_is_rejected_through_main(index, argument):
+    """A flag handed to an index that does not consume it is an error, not a no-op."""
+    flag, value = argument
+    argv = ["--index", index, "--periodicity", "monthly", "--output_file_base", "out", flag, value]
+
+    with pytest.raises(ValueError) as error:
+        cli_main.main(argv)
+
+    assert str(error.value) == f"The {flag} argument is not applicable to --index {index}"
+
+
+def test_an_unconsumed_flag_with_a_falsy_value_is_still_rejected():
+    """A provided zero is a value, not an absent argument."""
+    argv = ["--index", "spi", "--periodicity", "monthly", "--output_file_base", "out", "--kbdi_initial", "0"]
+
+    with pytest.raises(ValueError) as error:
+        cli_main.main(argv)
+
+    assert str(error.value) == "The --kbdi_initial argument is not applicable to --index spi"
+
+
+@pytest.mark.parametrize("spelling", ["--calibration_start_year", "--calibration_year_initial"])
+def test_an_aliased_flag_is_reported_under_every_spelling(spelling):
+    """Both spellings share one dest, so the message names the pair rather than guessing which was typed."""
+    argv = ["--index", "api", "--periodicity", "monthly", "--output_file_base", "out", spelling, "1981"]
+
+    with pytest.raises(ValueError) as error:
+        cli_main.main(argv)
+
+    assert str(error.value) == (
+        "The --calibration_start_year/--calibration_year_initial argument is not applicable to --index api"
+    )
+
+
+@pytest.mark.parametrize(
+    ("extra", "expected"),
+    [
+        (
+            ["--netcdf_temp", "x", "--var_name_temp", "y"],
+            "The --netcdf_temp and --var_name_temp arguments are not applicable to --index api",
+        ),
+        (
+            ["--netcdf_temp", "x", "--var_name_temp", "y", "--netcdf_awc", "z"],
+            "The --netcdf_temp, --var_name_temp, and --netcdf_awc arguments are not applicable to --index api",
+        ),
+    ],
+)
+def test_several_unconsumed_flags_are_reported_together(extra, expected):
+    """The rejection names every unconsumed flag in one message."""
+    argv = ["--index", "api", "--periodicity", "monthly", "--output_file_base", "out", *extra]
+
+    with pytest.raises(ValueError) as error:
+        cli_main.main(argv)
+
+    assert str(error.value) == expected
+
+
+@pytest.mark.parametrize(
+    ("index", "extra"),
+    [
+        # a PE file replaces the precipitation input, so its variable name is unused
+        ("edi", ["--netcdf_pe", "pe.nc", "--var_name_pe", "pe"]),
+        ("flood_index", ["--netcdf_pe", "pe.nc", "--var_name_pe", "pe"]),
+        # a PET file replaces the temperature input, so its variable name is unused
+        ("spei", ["--netcdf_pet", "pet.nc", "--var_name_pet", "pet"]),
+    ],
+)
+def test_variable_name_of_a_replaced_input_is_rejected(index, extra):
+    """The variable name of the input a provided file replaces is not silently ignored."""
+    shadowed = "--var_name_precip" if "--netcdf_pe" in extra else "--var_name_temp"
+    argv = [
+        "--index",
+        index,
+        "--periodicity",
+        "monthly",
+        "--output_file_base",
+        "out",
+        *extra,
+        shadowed,
+        "unused",
+    ]
+
+    with pytest.raises(ValueError) as error:
+        cli_main.main(argv)
+
+    assert str(error.value) == f"The {shadowed} argument is not applicable to --index {index}"
+
+
+def test_a_replaced_inputs_file_keeps_its_mutual_exclusion_message():
+    """A shadowed variable name does not preempt the file-level conflict check."""
+    argv = [
+        "--index",
+        "edi",
+        "--periodicity",
+        "daily",
+        "--output_file_base",
+        "out",
+        "--netcdf_precip",
+        "precip.nc",
+        "--var_name_precip",
+        "prcp",
+        "--netcdf_pe",
+        "pe.nc",
+        "--var_name_pe",
+        "pe",
+    ]
+
+    with pytest.raises(ValueError) as error:
+        cli_main.main(argv)
+
+    assert str(error.value) == "Both precipitation and PE files were specified, only one of these should be provided"

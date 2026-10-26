@@ -1,0 +1,344 @@
+import logging
+import math
+
+import numpy as np
+import pytest
+
+from climate_indices import eto
+from climate_indices.exceptions import InvalidArgumentError
+
+# ------------------------------------------------------------------------------
+# disable logging messages
+logging.disable(logging.CRITICAL)
+
+
+# ------------------------------------------------------------------------------
+def test_eto_hargreaves_1d_input():
+    """Test eto_hargreaves with 1-D input arrays (the primary bug case from issue #578)."""
+    # create sample 1-D daily temperature arrays (730 days = 2 years)
+    tmin = np.full(730, 10.0)  # 10 degrees C min
+    tmax = np.full(730, 25.0)  # 25 degrees C max
+    tmean = np.full(730, 17.5)  # 17.5 degrees C mean
+    latitude = 35.0  # degrees north
+
+    # should not raise IndexError (the bug)
+    result = eto.eto_hargreaves(tmin, tmax, tmean, latitude)
+
+    # verify output shape matches input
+    assert result.shape == (730,)
+
+    # verify reasonable PET values (positive for valid inputs)
+    valid_values = result[~np.isnan(result)]
+    assert np.all(valid_values > 0), "PET values should be positive"
+    assert np.all(valid_values < 20), "PET values should be reasonable (< 20 mm/day)"
+
+
+# ------------------------------------------------------------------------------
+def test_eto_hargreaves_2d_input():
+    """Test eto_hargreaves with 2-D input arrays (regression test)."""
+    # create 2-D arrays (2 years x 366 days)
+    tmin = np.full((2, 366), 10.0)
+    tmax = np.full((2, 366), 25.0)
+    tmean = np.full((2, 366), 17.5)
+    latitude = 35.0
+
+    result = eto.eto_hargreaves(tmin, tmax, tmean, latitude)
+
+    # output should be flattened to 1-D with length = 2 * 366
+    assert result.shape == (732,)
+
+    # verify reasonable PET values
+    valid_values = result[~np.isnan(result)]
+    assert np.all(valid_values > 0), "PET values should be positive"
+
+
+# ------------------------------------------------------------------------------
+def test_eto_hargreaves_size_mismatch():
+    """Test that size mismatch raises InvalidArgumentError."""
+    tmin = np.full(365, 10.0)
+    tmax = np.full(366, 25.0)  # different size
+    tmean = np.full(365, 17.5)
+
+    with pytest.raises(InvalidArgumentError):
+        eto.eto_hargreaves(tmin, tmax, tmean, 35.0)
+
+
+# ------------------------------------------------------------------------------
+def test_eto_hargreaves_invalid_latitude():
+    """Test that invalid latitude raises InvalidArgumentError."""
+    tmin = np.full(366, 10.0)
+    tmax = np.full(366, 25.0)
+    tmean = np.full(366, 17.5)
+
+    # latitude > 90 should raise error
+    with pytest.raises(InvalidArgumentError):
+        eto.eto_hargreaves(tmin, tmax, tmean, 91.0)
+
+    # latitude < -90 should raise error
+    with pytest.raises(InvalidArgumentError):
+        eto.eto_hargreaves(tmin, tmax, tmean, -91.0)
+
+
+# ------------------------------------------------------------------------------
+@pytest.mark.usefixtures(
+    "hargreaves_daily_tmin_celsius",
+    "hargreaves_daily_tmax_celsius",
+    "hargreaves_daily_tmean_celsius",
+    "hargreaves_latitude_degrees",
+)
+def test_eto_hargreaves_with_fixtures(
+    hargreaves_daily_tmin_celsius,
+    hargreaves_daily_tmax_celsius,
+    hargreaves_daily_tmean_celsius,
+    hargreaves_latitude_degrees,
+):
+    """Test eto_hargreaves using the standard test fixtures."""
+    result = eto.eto_hargreaves(
+        hargreaves_daily_tmin_celsius,
+        hargreaves_daily_tmax_celsius,
+        hargreaves_daily_tmean_celsius,
+        hargreaves_latitude_degrees,
+    )
+
+    # verify output shape matches input
+    assert result.shape == hargreaves_daily_tmin_celsius.shape
+
+    # verify reasonable PET values
+    valid_values = result[~np.isnan(result)]
+    assert len(valid_values) > 0, "Should produce some valid PET values"
+    assert np.all(valid_values > 0), "PET values should be positive"
+    assert np.all(valid_values < 20), "PET values should be reasonable (< 20 mm/day)"
+
+
+# ------------------------------------------------------------------------------
+def test_eto_hargreaves_temperature_validation_warning():
+    """Test that temperature validation warnings are issued for invalid data."""
+    # create data where tmin > tmax for some values
+    tmin = np.full(366, 25.0)  # higher than tmax!
+    tmax = np.full(366, 10.0)  # lower than tmin!
+    tmean = np.full(366, 17.5)
+    latitude = 35.0
+
+    # should still compute (with warnings) rather than raise error
+    # note: warnings are now logged via structlog and visible in test output
+    # the primary test is that the function completes without raising an exception
+    result = eto.eto_hargreaves(tmin, tmax, tmean, latitude)
+
+    # function should still return results (may be invalid, but doesn't crash)
+    assert result.shape == (366,)
+    # the warnings are emitted via structlog and visible in pytest output
+    # checking for specific warning text would require capturing structlog output
+    # which is more complex than the value this test provides
+
+
+# ------------------------------------------------------------------------------
+@pytest.mark.usefixtures(
+    "temps_celsius",
+    "latitude_degrees",
+    "data_year_start_monthly",
+    "pet_thornthwaite_mm",
+)
+def test_eto_thornthwaite(temps_celsius, latitude_degrees, data_year_start_monthly, pet_thornthwaite_mm):
+    # compute PET from the monthly temperatures, latitude, and initial years
+    computed_pet = eto.eto_thornthwaite(temps_celsius, latitude_degrees, data_year_start_monthly)
+
+    # make sure PET is being computed as expected
+    np.testing.assert_allclose(
+        computed_pet,
+        pet_thornthwaite_mm.flatten(),
+        atol=0.001,
+        equal_nan=True,
+        err_msg="PET (Thornthwaite) values not computed as expected",
+    )
+
+    # make sure that a 3-D array raises an error
+    reshaped_temps = np.reshape(temps_celsius[0:1400], (123, 2, 6))
+    with pytest.raises(ValueError):
+        eto.eto_thornthwaite(
+            reshaped_temps,
+            latitude_degrees,
+            data_year_start_monthly,
+        )
+
+    # make sure that an invalid latitude value (lat > 90) raises an error
+    with pytest.raises(InvalidArgumentError):
+        eto.eto_thornthwaite(
+            temps_celsius,
+            91.0,  # latitude > 90 is invalid
+            data_year_start_monthly,
+        )
+
+    # make sure that an invalid latitude value (lat < -90) raises an error
+    with pytest.raises(InvalidArgumentError):
+        eto.eto_thornthwaite(
+            temps_celsius,
+            -91.0,  # latitude < -90 is invalid
+            data_year_start_monthly,
+        )
+
+    # make sure that an invalid latitude value (None) raises an error
+    with pytest.raises(TypeError):
+        eto.eto_thornthwaite(temps_celsius, None, data_year_start_monthly)
+
+    # make sure that an invalid latitude value (NaN) raises an error
+    with pytest.raises(InvalidArgumentError):
+        eto.eto_thornthwaite(temps_celsius, np.nan, data_year_start_monthly)
+
+
+# ------------------------------------------------------------------------------
+@pytest.mark.parametrize("shape,spatial", [((24,), False), ((2, 12), False), ((24, 2, 2), True)])
+@pytest.mark.parametrize("read_only", [False, True])
+def test_eto_thornthwaite_preserves_input(shape, spatial, read_only):
+    temps = np.full(shape, 10.0)
+    temps.reshape(-1)[:2] = [-5.0, np.nan]
+    before = temps.copy()
+    if read_only:
+        temps.flags.writeable = False
+
+    result = eto.eto_thornthwaite(temps, 40.0, 2000, spatial_time_major=spatial)
+
+    np.testing.assert_array_equal(temps, before)
+    expected = eto.eto_thornthwaite(np.maximum(before, 0), 40.0, 2000, spatial_time_major=spatial)
+    np.testing.assert_allclose(result, expected, equal_nan=True)
+    assert np.isfinite(result).any()
+
+
+# ------------------------------------------------------------------------------
+@pytest.mark.validation
+@pytest.mark.usefixtures(
+    "thornthwaite_literature_monthly_temps_celsius",
+    "thornthwaite_literature_expected_pet_mm",
+)
+def test_eto_thornthwaite_literature_watson(
+    thornthwaite_literature_monthly_temps_celsius,
+    thornthwaite_literature_expected_pet_mm,
+):
+    """Thornthwaite (1948) worked example from Watson & Burnett (1995).
+
+    See tests/fixture/pet_literature/metadata.json for the full citation and
+    for why an approximate, back-solved latitude is used here: the source
+    supplies monthly mean daylight hours directly rather than a latitude.
+    """
+    computed_pet = eto.eto_thornthwaite(
+        thornthwaite_literature_monthly_temps_celsius.copy(),
+        43.0,  # approximate latitude back-solved from the source's daylight hours
+        2001,  # arbitrary non-leap year; source does not specify one
+    )
+    np.testing.assert_allclose(
+        computed_pet,
+        thornthwaite_literature_expected_pet_mm,
+        atol=4.0,  # matches PyETo's own tolerance for this exact source
+        err_msg="PET (Thornthwaite) literature worked example not reproduced within tolerance",
+    )
+
+
+# ------------------------------------------------------------------------------
+@pytest.mark.validation
+@pytest.mark.usefixtures(
+    "hargreaves_literature_tmin_tmax_tmean_celsius",
+    "hargreaves_literature_expected_eto_mm_per_day",
+)
+def test_eto_hargreaves_literature_mehta(
+    hargreaves_literature_tmin_tmax_tmean_celsius,
+    hargreaves_literature_expected_eto_mm_per_day,
+):
+    """Hargreaves-Samani (1985) worked example from Mehta (2006).
+
+    See tests/fixture/pet_literature/metadata.json for the full citation and
+    for how the source's extraterrestrial radiation input was mapped onto a
+    (latitude, day_of_year) pair for climate_indices.eto.eto_hargreaves.
+    """
+    tmin, tmax, tmean = hargreaves_literature_tmin_tmax_tmean_celsius
+    day_of_year = 58  # back-solved to reproduce the source's et_rad input
+    latitude_degrees = -12.3
+
+    daily_tmin = np.full(366, tmin)
+    daily_tmax = np.full(366, tmax)
+    daily_tmean = np.full(366, tmean)
+
+    result = eto.eto_hargreaves(daily_tmin, daily_tmax, daily_tmean, latitude_degrees)
+
+    np.testing.assert_allclose(
+        result[day_of_year - 1],
+        hargreaves_literature_expected_eto_mm_per_day[0],
+        atol=0.05,  # source value is quoted to 1 decimal place
+        err_msg="ETo (Hargreaves) literature worked example not reproduced within tolerance",
+    )
+
+
+# ------------------------------------------------------------------------------
+def test_sunset_hour_angle():
+    # make sure that an invalid latitude value raises an error
+    with pytest.raises(InvalidArgumentError):
+        eto._sunset_hour_angle(np.deg2rad(-100.0), np.deg2rad(0.0))
+    with pytest.raises(InvalidArgumentError):
+        eto._sunset_hour_angle(np.nan, np.deg2rad(0.0))
+
+    # make sure that an invalid solar declination angle raises an error
+    with pytest.raises(InvalidArgumentError):
+        eto._sunset_hour_angle(np.deg2rad(0.0), np.deg2rad(-75.0))
+    with pytest.raises(InvalidArgumentError):
+        eto._sunset_hour_angle(np.deg2rad(0.0), np.deg2rad(85.0))
+    with pytest.raises(InvalidArgumentError):
+        eto._sunset_hour_angle(np.deg2rad(0.0), np.nan)
+
+    expected_value = math.pi / 2
+    computed_value = eto._sunset_hour_angle(0.0, np.deg2rad(0.0))
+    np.testing.assert_allclose(
+        computed_value,
+        expected_value,
+        atol=0.0001,
+        err_msg="Sunset hour angle not computed as expected",
+    )
+
+    expected_value = 1.6018925422201806
+    computed_value = eto._sunset_hour_angle(np.deg2rad(10.0), np.deg2rad(10.0))
+    np.testing.assert_allclose(
+        computed_value,
+        expected_value,
+        atol=0.0001,
+        err_msg="Sunset hour angle not computed as expected",
+    )
+
+
+# ------------------------------------------------------------------------------
+def test_solar_declination():
+    # make sure invalid arguments raise an error
+    with pytest.raises(InvalidArgumentError):
+        eto._solar_declination(0)
+    with pytest.raises(InvalidArgumentError):
+        eto._solar_declination(-1)
+    with pytest.raises(InvalidArgumentError):
+        eto._solar_declination(367)
+    with pytest.raises(InvalidArgumentError):
+        eto._solar_declination(5000)
+    with pytest.raises(InvalidArgumentError):
+        eto._solar_declination(np.nan)
+
+    expected_value = -0.313551072399921
+    computed_value = eto._solar_declination(30)
+    np.testing.assert_allclose(
+        computed_value,
+        expected_value,
+        atol=0.0001,
+        err_msg="Solar declination not computed as expected",
+    )
+
+
+# ------------------------------------------------------------------------------
+def test_daylight_hours():
+    # make sure invalid arguments raise an error
+    with pytest.raises(InvalidArgumentError):
+        eto._daylight_hours(math.pi + 1)
+    with pytest.raises(InvalidArgumentError):
+        eto._daylight_hours(-1.0)
+    with pytest.raises(InvalidArgumentError):
+        eto._daylight_hours(np.nan)
+
+    expected_value = 7.999999999999999
+    computed_value = eto._daylight_hours(math.pi / 3)
+    np.testing.assert_equal(
+        computed_value,
+        expected_value,
+        err_msg="Daylight hours not computed as expected",
+    )

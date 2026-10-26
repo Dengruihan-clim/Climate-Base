@@ -1,0 +1,392 @@
+# Workflow examples
+
+Complete invocations to copy and adapt. Option names and valid values are in the
+[command-line interface reference](reference.md#command-line-interface); the
+distribution-fitting parameters used below are described in
+{doc}`algorithm-reference`.
+
+## Example input and output datasets
+
+Example NetCDF datasets that are valid input to the `climate_indices` command
+are available from the associated project
+[example_climate_indices](https://github.com/monocongo/example_climate_indices/).
+The input NetCDF files used in the examples below (`nclimdiv.nc`,
+`nclimgrid_lowres_prcp.nc`, etc.) can be fetched from this repository, as well
+as associated output NetCDF datasets that can be used to validate result of the
+below examples.
+
+## Example command line invocations
+
+### US Climate Divisions (all indices)
+
+```bash
+process_climate_indices --index all --periodicity monthly --scales 3 6 \
+--netcdf_precip /data/nclimdiv.nc \
+--netcdf_temp /data/nclimdiv.nc \
+--netcdf_awc /data/nclimdiv.nc \
+--output_file_base /data/nclimdiv \
+--var_name_precip prcp --var_name_temp tavg --var_name_awc awc \
+--calibration_start_year 1951 --calibration_end_year 2010
+```
+
+The above command will compute all indices from an input NetCDF dataset containing
+precipitation, temperature, and available water capacity variables (in this case,
+the US Climate Divisions NetCDF dataset provided in the example inputs directory).
+The input dataset is monthly data and the calibration period used will be
+Jan. 1951 through Dec. 2010. The indices will be computed at 3-month and 6-month scales.
+Upon completion the individual NetCDF files will contain variables for all computed indices:
+`/data/nclimdiv_pet.nc`, `/data/nclimdiv_pnp_03.nc`, `/data/nclimdiv_pnp_06.nc`,
+`/data/nclimdiv_spi_gamma_03.nc`, `/data/nclimdiv_spi_gamma_06.nc`,
+`/data/nclimdiv_spi_pearson_03.nc`, `/data/nclimdiv_spi_pearson_06.nc`,
+`/data/nclimdiv_spei_gamma_03.nc`, `/data/nclimdiv_spei_gamma_06.nc`,
+`/data/nclimdiv_spei_pearson_03.nc`, `/data/nclimdiv_spei_pearson_06.nc`,
+`/data/nclimdiv_pdsi.nc`, `/data/nclimdiv_phdi.nc`, `/data/nclimdiv_pmdi.nc`,
+`/data/nclimdiv_zindex.nc`, and `/data/nclimdiv_scpdsi.nc`.
+Parallelization will occur utilizing all but one of the available CPUs
+(default since the `--multiprocessing` option is omitted).
+
+### PET monthly
+
+```bash
+process_climate_indices --index pet --periodicity monthly --netcdf_temp \
+/data/nclimgrid_lowres_tavg.nc --var_name_temp tavg --output_file_base \
+<out_dir>/nclimgrid_lowres --multiprocessing all_but_one
+```
+
+The above command will compute PET (potential evapotranspiration) using the
+Thornthwaite method from an input temperature dataset (in this case, the reduced
+resolution nClimGrid temperature dataset provided in the example inputs directory).
+The input dataset is monthly data and the calibration period used will be Jan. 1951
+through Dec. 2010. The output file will be `<out_dir>/nclimgrid_lowres_pet.nc`.
+Parallelization will occur utilizing all but one of the available CPUs.
+
+### SPI daily
+
+```bash
+process_climate_indices --index spi  --periodicity daily --netcdf_precip \
+/data/cmorph_lowres_daily_conus_prcp.nc --var_name_precip \
+prcp --output_file_base <out_dir>/cmorph_lowres_daily_conus --scales 30 90 \
+--calibration_start_year 1998 --calibration_end_year 2016 \
+--multiprocessing all
+```
+
+The above command will compute SPI (standardized precipitation index, both gamma
+and Pearson Type III distributions) from an input precipitation dataset (in this case,
+the reduced resolution CMORPH precipitation dataset provided in the example inputs
+directory). The input dataset is daily data and the calibration period used will be
+Jan. 1st, 1998 through Dec. 31st, 2016. The index will be computed at 30-day and
+90-day timescales. The output files will be `<out_dir>/cmorph_lowres_daily_conus_spi_gamma_30.nc`,
+`<out_dir>/cmorph_lowres_daily_conus_spi_gamma_90.nc`,
+`<out_dir>/cmorph_lowres_daily_conus_spi_pearson_30.nc`, and
+`<out_dir>/cmorph_lowres_daily_conus_spi_pearson_90.nc`. Parallelization will occur utilizing
+all CPUs.
+
+### SPI monthly
+
+```bash
+process_climate_indices --index spi --periodicity monthly --netcdf_precip \
+/data/nclimgrid_lowres_prcp.nc --var_name_precip prcp \
+--output_file_base <out_dir>/nclimgrid_lowres --scales 6 12 \
+--calibration_start_year 1951 --calibration_end_year 2010 \
+--multiprocessing all
+```
+
+The above command will compute SPI (standardized precipitation index, both gamma and
+Pearson Type III distributions) from an input precipitation dataset (in this case,
+the reduced resolution nClimGrid precipitation dataset provided in the example inputs directory).
+The input dataset is monthly data and the calibration period used will be
+Jan. 1951 through Dec. 2010. The index will be computed at 6-month and 12-month timescales.
+The output files will be `<out_dir>/nclimgrid_lowres_spi_gamma_06.nc`,
+`<out_dir>/nclimgrid_lowres_spi_gamma_12.nc`, `<out_dir>/nclimgrid_lowres_spi_pearson_06.nc`,
+and `<out_dir>/nclimgrid_lowres_spi_pearson_12.nc`. Parallelization will occur utilizing
+all CPUs.
+
+### KBDI daily
+
+```bash
+process_climate_indices --index kbdi --periodicity daily \
+--netcdf_precip /data/cmorph_lowres_daily_conus_prcp.nc --var_name_precip prcp \
+--netcdf_temp /data/daily_tmax.nc --var_name_temp tmax \
+--output_file_base <out_dir>/kbdi_example
+```
+
+The above command will compute KBDI (Keetch-Byram Drought Index) from daily
+precipitation and daily maximum temperature datasets. The inputs must cover at
+least 30 years of daily record so that KBDI's mean annual precipitation can be
+derived. Input values are interpreted as metric (mm and degrees Celsius) by
+default; use `--kbdi_units imperial` for inputs in inches and degrees
+Fahrenheit, which also selects output in hundredths of an inch. The output
+file will be `<out_dir>/kbdi_example_kbdi.nc` (`<out_dir>/kbdi_example_kbdi_imperial.nc`
+with `--kbdi_units imperial`). Unlike the other indices, KBDI is not computed
+by the `--index all` selection.
+
+### Flood indices daily
+
+```bash
+process_climate_indices --index edi --periodicity daily \
+--netcdf_precip /data/daily_prcp.nc --var_name_precip prcp \
+--calibration_start_year 1991 --calibration_end_year 2020 \
+--output_file_base <out_dir>/flood_example
+
+process_climate_indices --index flood_index --periodicity daily \
+--netcdf_pe <out_dir>/flood_example_pe.nc --var_name_pe pe --year_start_month 10 \
+--output_file_base <out_dir>/flood_example
+
+process_climate_indices --index api --periodicity daily --api_k 0.9 \
+--netcdf_precip /data/daily_prcp.nc --var_name_precip prcp \
+--output_file_base <out_dir>/flood_example
+```
+
+The above commands compute the flood-potential indices (which show flood
+potential, not flooding) from a daily precipitation dataset, all with
+`--periodicity daily`. EDI and the Flood Index (I_F) are computed from effective
+precipitation (PE): given `--netcdf_precip` they first compute PE and write it to
+`<out_dir>/flood_example_pe.nc`, and given `--netcdf_pe` and `--var_name_pe` in
+its place, as in the second command, they reuse an existing PE file, so one PE
+file can feed both indices. Provide one of the two, not both. The calibration
+years are optional and inferred from the input when omitted. PE is undefined
+for the first 364 days of a record, so an omitted I_F calibration start year
+defaults to the second year of the record, 1992 for the second command. For
+I_F, the calibration end year is the start year of the last complete annual
+period, which is 2019 for a record ending in 2020 with `--year_start_month 10`.
+I_F requires
+`--year_start_month`, the calendar month on which each year of annual maxima
+starts, and API requires `--api_k`, its daily decay constant between 0 and 1.
+`--index pe` writes only PE. The output files are `<out_dir>/flood_example_edi.nc`,
+`<out_dir>/flood_example_flood_index.nc`, and `<out_dir>/flood_example_api.nc`. Like
+KBDI, these indices are not computed by the `--index all` selection.
+
+### Energy indices daily
+
+```bash
+process_climate_indices --index hdd --periodicity daily \
+--netcdf_temp /data/daily_tas.nc --var_name_temp tas --heating_base_temperature 18 \
+--output_file_base <out_dir>/energy_example
+
+process_climate_indices --index edd --periodicity daily \
+--netcdf_temp /data/daily_tas.nc --var_name_temp tas \
+--heating_base_temperature 18 --cooling_base_temperature 24 \
+--output_file_base <out_dir>/energy_example
+
+process_climate_indices --index wind_profile --periodicity daily \
+--netcdf_wind /data/daily_sfcWind.nc --var_name_wind sfcWind --hub_height 100 \
+--output_file_base <out_dir>/energy_example
+
+process_climate_indices --index srepi --periodicity daily \
+--netcdf_values /data/wind_capacity_factor.nc --var_name_values cf \
+--scales 3 12 --calibration_start_year 1991 --calibration_end_year 2020 \
+--output_file_base <out_dir>/energy_example
+
+process_climate_indices --index srepi --periodicity hourly \
+--netcdf_values /data/hourly_wind_capacity_factor.nc --var_name_values cf \
+--scales 24 168 --calibration_start_year 1991 --calibration_end_year 2020 \
+--output_file_base <out_dir>/energy_example_hourly
+```
+
+The above commands compute the energy indices through the `energy` module, all
+with `--periodicity daily` except the last. The degree days (`hdd`, `cdd`, and `edd`) take a
+daily mean temperature input in °C, or K or °F, which the adapter converts. Each
+needs the base temperature it is defined against: `--heating_base_temperature`
+for `hdd` and `edd`, and `--cooling_base_temperature` for `cdd` and `edd`. The
+output files are `<out_dir>/energy_example_heating_degree_days.nc`,
+`<out_dir>/energy_example_cooling_degree_days.nc`, and
+`<out_dir>/energy_example_energy_degree_days.nc`.
+
+The wind profile extrapolates a wind speed from `--reference_height` (10 m by
+default) to `--hub_height`, by the power law with `--wind_shear_alpha` (1/7 by
+default) or, with `--wind_profile_method log`, by the logarithmic law with
+`--roughness_length`. Each method rejects the argument that belongs to the other.
+Its output file is
+`<out_dir>/energy_example_hub_height_wind_speed.nc`, or
+`<out_dir>/energy_example_hub_height_wind_speed_log.nc` for the logarithmic
+profile.
+
+SREPI, the standardized demand index (`demand_index`), and SRLI (`srli`)
+standardize the series given by `--netcdf_values` and `--var_name_values`: a
+capacity factor or production series for `srepi`, an energy degree day or demand
+series for `demand_index`, and a signed residual-load series for `srli`. All
+three take `--scales`, the optional `--calibration_start_year`,
+`--calibration_end_year`, and `--output_scale` arguments, and the empirical
+distribution, which needs at least ten valid calibration values per calendar
+step. `--periodicity` must match the cadence of the input series: the adapter
+rejects a daily request for a monthly series, and the other way round. These three
+indices also accept `--periodicity hourly`, with Timescales in hours (24 for a day,
+168 for a week). An hourly input must begin at 00:00 on January 1 and contain
+contiguous hours, and the output keeps the input's Gregorian hour axis. Every
+other index rejects `--periodicity hourly`. Hourly file and variable names include
+`_hourly` after the Timescale, for example `<out_dir>/energy_example_hourly_srepi_24_hourly.nc`.
+Daily and monthly names remain unchanged.
+Their output files carry the Timescale in the name, for example
+`<out_dir>/energy_example_srepi_03.nc` and
+`<out_dir>/energy_example_standardized_demand_index_12.nc`. Like KBDI and the
+flood indices, the energy indices are not computed by the `--index all`
+selection. The capacity-factor transforms and the energy-drought event
+statistics remain available only from Python: the capacity factors need a power
+curve or a radiation-temperature-wind triple, and the event statistics write a
+per-cell run structure rather than one gridded index.
+
+### SPEI monthly
+
+```bash
+process_climate_indices --index spei --periodicity monthly --netcdf_precip \
+/data/nclimgrid_lowres_prcp.nc --var_name_precip prcp --netcdf_pet \
+/data/nclimgrid_lowres_pet.nc --var_name_pet pet --output_file_base \
+<out_dir>/nclimgrid_lowres --scales 9 18 --calibration_start_year 1951 \
+--calibration_end_year 2010 --multiprocessing all
+```
+
+The above command will compute SPEI (standardized precipitation evapotranspiration index,
+both gamma and Pearson Type III distributions) from input precipitation and potential evapotranspiration datasets
+(in this case, the reduced resolution nClimGrid precipitation and PET datasets provided in the example inputs directory).
+The input datasets are monthly data and the calibration period used will be Jan. 1951 through Dec. 2010. The index
+datasets will be computed at 9-month and 18-month timescales. The output files will be
+`<out_dir>/nclimgrid_lowres_spei_gamma_09.nc`, `<out_dir>/nclimgrid_lowres_spei_gamma_18.nc`,
+`<out_dir>/nclimgrid_lowres_spei_pearson_09.nc`, and `<out_dir>/nclimgrid_lowres_spei_pearson_18.nc`.
+Parallelization will occur utilizing all CPUs.
+
+### Palmers monthly
+
+```bash
+process_climate_indices --index palmers --periodicity monthly --netcdf_precip \
+/data/nclimgrid_lowres_prcp.nc --var_name_precip prcp --netcdf_pet \
+/data/nclimgrid_lowres_pet.nc --var_name_pet pet --netcdf_awc \
+/data/nclimgrid_awc.nc  --var_name_awc awc --output_file_base \
+<out_dir>/nclimgrid_lowres --calibration_start_year 1951 --calibration_end_year 2010 \
+--multiprocessing all
+```
+
+The above command will compute the Palmer drought indices: PDSI (original Palmer Drought Severity Index),
+PHDI (Palmer Hydrological Drought Index), PMDI (Palmer Modified Drought Index), Z-Index (Palmer
+Z-Index), and scPDSI (Self-calibrated Palmer Drought Severity Index) from input precipitation,
+potential evapotranspiration, and available water capacity datasets
+(in this case, the reduced resolution nClimGrid precipitation and PET datasets provided in the
+example inputs directory, plus an available water capacity dataset covering the same grid cells --
+see the note on AWC files below). The input datasets are monthly data and the calibration period used will be
+Jan. 1951 through Dec. 2010. The output files will be
+`<out_dir>/nclimgrid_lowres_pdsi.nc`, `<out_dir>/nclimgrid_lowres_phdi.nc`,
+`<out_dir>/nclimgrid_lowres_pmdi.nc`, `<out_dir>/nclimgrid_lowres_zindex.nc`,
+and `<out_dir>/nclimgrid_lowres_scpdsi.nc`.
+
+:::{note}
+The Palmer routines ({func}`climate_indices.palmer.pdsi`) take precipitation,
+PET, and available water capacity in inches. The command line normalizes
+precipitation and PET to millimeters for the other indices, so these inputs
+may declare a depth: values labeled `inches`/`inch`, `mm`/`millimeters`, or
+`mm/month` are converted to inches before computing. A precipitation rate
+(`mm/dy`, `mm/day`, `kg m-2 s-1`) is not accepted for Palmers -- it is a daily
+rate, not the monthly accumulated depth `palmer.pdsi()` requires. An AWC
+variable without a `units` attribute is assumed to be inches, and one that
+declares any other unit is rejected.
+:::
+
+:::{note}
+Self-calibrated PDSI (scPDSI) is available through the NumPy API as
+{func}`climate_indices.palmer.scpdsi` and through
+`process_climate_indices --index palmers`, which writes it as
+`<output_file_base>_scpdsi.nc` alongside PDSI, PHDI, PMDI, and Z-Index.
+:::
+
+:::{note}
+Available water capacity is an external soil input, and the example inputs
+directory ships precipitation and PET only. The one reduced AWC file this
+repository provides is `tests/fixture/nclimgrid_awc/polaris_awc_1000mm.nc`: a
+nine-cell subset of the same reduced nClimGrid grid, holding total
+plant-available water in millimetres over a 0-1000 mm soil column, derived from
+POLARIS v1.0 van Genuchten parameters. It can be used with a Palmers run whose
+precipitation and PET inputs are subset to the same nine cells (latitude
+37.895832-39.229168, longitude -100.6875 to -99.354164); select them by grid
+index rather than by value, since the reduction stores float32 coordinates and
+the command line matches coordinates to within a tenth of the grid spacing.
+
+Treat that file as a development example, not as an authoritative AWC product:
+it is one candidate source at one column depth, and which source and depth are
+best for nClimGrid-based PDSI processing is still open. It is licensed
+CC BY-NC 4.0 and derives its grid from an NCEI nClimGrid reduction, so it must
+not be redistributed commercially and must be attributed to Chaney et al.
+(2019) and to NCEI. `tests/fixture/nclimgrid_awc/provenance.json` records the
+full retrieval, license, and limitations, and
+`scripts/prepare_nclimgrid_awc_fixture.py` rebuilds the file -- and can be
+pointed at a wider subset -- from the same source. For any other soil source,
+{mod}`climate_indices.aws_ingest` loads and harmonizes it onto a climate grid.
+:::
+
+Parallelization will occur utilizing all CPUs.
+
+## Pre-compute SPI distribution fitting variables
+
+The distribution fitting parameters of a calibration period can be computed once
+and then supplied to subsequent SPI calculations, so that later values are
+standardized against the same fitted climatology.
+
+The fitting cache is a library-level feature. The legacy `spi` script's
+`--save_params` and `--load_params` options, which cached the same parameters
+in a NetCDF file, were removed with the script in 3.0.0 -- see
+{doc}`deprecations/api-changes`.
+
+```python
+import xarray as xr
+
+from climate_indices import compute, indices
+
+periodicity = compute.Periodicity.monthly
+precipitation = xr.open_dataset("nclimgrid_prcp.nc")["prcp"].transpose("time", "lat", "lon")
+values = precipitation.values
+
+# fit the 3-month scaled precipitation once, over the calibration period
+scaled = compute.prepare_scaled(values, scale=3, periodicity=periodicity, spatial_time_major=True)
+alphas, betas = compute.gamma_parameters(
+    scaled,
+    data_start_year=1975,
+    calibration_start_year=1998,
+    calibration_end_year=2016,
+    periodicity=periodicity,
+)
+
+# standardize against that fitted climatology
+spi = indices.spi(
+    values,
+    scale=3,
+    distribution=indices.Distribution.gamma,
+    data_start_year=1975,
+    calibration_year_initial=1998,
+    calibration_year_final=2016,
+    periodicity=periodicity,
+    fitting_params={"alpha": alphas, "beta": betas},
+    spatial_time_major=True,
+)
+```
+
+Perform the fitting over the calibration period only, and keep the parameters for
+as long as that climatology is the one to standardize against -- for example with
+`np.savez("nclimgrid_fitting.npz", alpha=alphas, beta=betas)` and `np.load()` in
+later runs. The parameters are then used exactly as supplied: the calibration years
+still passed to `indices.spi()` no longer take part in the `alpha` and `beta` fit,
+but without a supplied `prob_zero` they still choose the window the gamma zero
+fraction is counted over, so they have to match the period the parameters were
+fitted over. Save that zero fraction as `prob_zero` alongside `alpha` and `beta`
+to fix the zero mass as well.
+
+They also have to come from the same fitting scale and the same series the
+consuming call standardizes. The parameter arrays record neither, and
+`indices.spi()` does not validate them, so parameters fitted from 3-month scaled
+precipitation are accepted by a 6-month call and silently standardize against the
+wrong distribution. Keep a cached fit next to the scale it was fitted at, and reuse
+it only for that same scale.
+
+Pearson Type III parameters are computed per series from the scaled values with
+`compute.pearson_parameters()` and supplied as `prob_zero`, `loc`, `scale`,
+and `skew`. The parameters of a single series are period-only arrays, shape (12,)
+for monthly or (366,) for daily input. For the gamma fit, the parameters of a
+time-major grid carry the cell dimensions after the period axis, shape
+(12, lat, lon) for monthly gridded input, as in the example above; a grid has to be
+time-major with three or more dimensions, since two-dimensional input is still read
+as the legacy (years, periods) layout of one series. Note that the command line reads
+gridded input in the opposite dimension order, (lat, lon, time).
+
+The example above is a whole-grid NumPy path: `.values` materializes the entire
+input, and the scaling, fit, and transform then add full-grid arrays of their own, so
+the grid has to fit in memory alongside them. For a grid that does not, pass the
+xarray data instead -- {func}`climate_indices.spi` and
+{func}`climate_indices.spei` accept a Dask-backed DataArray chunked over the spatial
+dimensions with time as a single chunk -- see {doc}`xarray_migration`. For a
+complete parallel example and the measured speedups, see {doc}`performance`.

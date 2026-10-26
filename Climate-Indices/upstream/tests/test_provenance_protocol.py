@@ -1,0 +1,262 @@
+"""Tests for the reference dataset provenance protocol.
+
+Validates that all reference datasets in tests/fixture/ have valid
+provenance.json files conforming to the project's provenance schema.
+This ensures scientific reproducibility and guards against silent
+data corruption in reference datasets.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+from typing import Any
+
+import jsonschema
+import pytest
+
+# path constants
+FIXTURE_DIR = Path(__file__).parent / "fixture"
+SCHEMA_PATH = FIXTURE_DIR / "provenance_schema.json"
+
+
+def _load_schema() -> dict[str, Any]:
+    """Load the provenance JSON Schema."""
+    with SCHEMA_PATH.open() as f:
+        return json.load(f)
+
+
+def _find_provenance_files() -> list[Path]:
+    """Find all provenance.json files under the fixture directory."""
+    return sorted(FIXTURE_DIR.rglob("provenance.json"))
+
+
+def _compute_checksum_for_npy_files(directory: Path) -> str:
+    """Compute SHA-256 checksum for .npy files in a single directory.
+
+    Concatenates sorted .npy file contents and returns the hex digest.
+
+    Args:
+        directory: Path to the directory containing .npy files.
+
+    Returns:
+        Hex-encoded SHA-256 digest string.
+    """
+    hasher = hashlib.sha256()
+    npy_files = sorted(directory.glob("*.npy"))
+    for npy_file in npy_files:
+        hasher.update(npy_file.read_bytes())
+    return hasher.hexdigest()
+
+
+class TestProvenanceSchema:
+    """Validate provenance.json files against the JSON Schema."""
+
+    def test_schema_file_exists(self) -> None:
+        """Verify the provenance schema file exists."""
+        assert SCHEMA_PATH.exists(), f"Provenance schema not found at {SCHEMA_PATH}. Run story 3.2 to create it."
+
+    def test_schema_is_valid_json(self) -> None:
+        """Verify the schema file contains valid JSON."""
+        schema = _load_schema()
+        assert isinstance(schema, dict)
+        assert "required" in schema
+
+    @pytest.mark.parametrize(
+        "provenance_path",
+        _find_provenance_files(),
+        ids=[str(p.parent.relative_to(FIXTURE_DIR)) for p in _find_provenance_files()],
+    )
+    def test_provenance_conforms_to_schema(self, provenance_path: Path) -> None:
+        """Validate each provenance.json file against the schema."""
+        schema = _load_schema()
+        with provenance_path.open() as f:
+            provenance = json.load(f)
+
+        jsonschema.validate(instance=provenance, schema=schema)
+
+    @pytest.mark.parametrize(
+        "provenance_path",
+        _find_provenance_files(),
+        ids=[str(p.parent.relative_to(FIXTURE_DIR)) for p in _find_provenance_files()],
+    )
+    def test_provenance_has_required_fields(self, provenance_path: Path) -> None:
+        """Verify all required fields are present and non-empty."""
+        with provenance_path.open() as f:
+            provenance = json.load(f)
+
+        required_fields = [
+            "source",
+            "url",
+            "download_date",
+            "subset_description",
+            "checksum_sha256",
+            "fixture_version",
+            "validation_tolerance",
+        ]
+        for field in required_fields:
+            assert field in provenance, f"Missing required field: {field}"
+            assert provenance[field], f"Field '{field}' is empty"
+
+
+class TestProvenanceChecksum:
+    """Validate that checksums match actual data files."""
+
+    def test_palmer_checksum_matches(self) -> None:
+        """Verify Palmer fixture checksum matches provenance.json.
+
+        The checksum in the Palmer provenance file is computed from
+        division 0101 only (the reference subset for validation).
+        """
+        provenance_path = FIXTURE_DIR / "palmer" / "provenance.json"
+        if not provenance_path.exists():
+            pytest.skip("Palmer provenance.json not yet created")
+
+        with provenance_path.open() as f:
+            provenance = json.load(f)
+
+        expected_checksum = provenance["checksum_sha256"]
+
+        # compute actual checksum from division 0101
+        division_dir = FIXTURE_DIR / "palmer" / "0101"
+        assert division_dir.exists(), "Palmer division 0101 fixture missing"
+
+        actual_checksum = _compute_checksum_for_npy_files(division_dir)
+        assert actual_checksum == expected_checksum, (
+            f"Palmer fixture checksum mismatch. "
+            f"Expected: {expected_checksum}, "
+            f"Actual: {actual_checksum}. "
+            f"If the fixture data was intentionally updated, "
+            f"regenerate the checksum and update provenance.json."
+        )
+
+    def test_pet_literature_checksum_matches(self) -> None:
+        """Verify PET literature fixture checksum matches provenance.json."""
+        fixture_dir = FIXTURE_DIR / "pet_literature"
+        provenance_path = fixture_dir / "provenance.json"
+        assert provenance_path.exists(), "PET literature provenance.json missing"
+
+        with provenance_path.open() as f:
+            provenance = json.load(f)
+
+        expected_checksum = provenance["checksum_sha256"]
+        actual_checksum = _compute_checksum_for_npy_files(fixture_dir)
+        assert actual_checksum == expected_checksum, (
+            f"PET literature fixture checksum mismatch. "
+            f"Expected: {expected_checksum}, "
+            f"Actual: {actual_checksum}. "
+            f"If the fixture data was intentionally updated, "
+            f"regenerate the checksum and update provenance.json."
+        )
+
+    def test_ncei_spi_checksum_matches(self) -> None:
+        """Verify NCEI SPI fixture checksum matches provenance.json.
+
+        The checksum covers the complete canonical array set (all seven
+        timescale .npy files), so a corrupted, partially refreshed, or
+        replaced array fails loudly before the set is used as a reference.
+        """
+        fixture_dir = FIXTURE_DIR / "ncei_spi"
+        provenance_path = fixture_dir / "provenance.json"
+        if not provenance_path.exists():
+            pytest.skip("NCEI SPI provenance.json not yet created")
+
+        with provenance_path.open() as f:
+            provenance = json.load(f)
+
+        actual_checksum = _compute_checksum_for_npy_files(fixture_dir)
+        assert actual_checksum == provenance["checksum_sha256"], (
+            f"NCEI SPI fixture checksum mismatch. "
+            f"Expected: {provenance['checksum_sha256']}, "
+            f"Actual: {actual_checksum}. "
+            f"If the fixture data was intentionally refreshed, "
+            f"rerun scripts/prepare_ncei_spi_fixtures.py."
+        )
+
+    def test_speibase_checksum_matches(self) -> None:
+        """Verify SPEIbase fixture checksum matches provenance.json.
+
+        The checksum covers the complete canonical array set (all four
+        timescale .npy files), so a corrupted, partially refreshed, or
+        replaced array fails loudly before the set is used as a reference.
+        """
+        fixture_dir = FIXTURE_DIR / "speibase"
+        provenance_path = fixture_dir / "provenance.json"
+        if not provenance_path.exists():
+            pytest.skip("SPEIbase provenance.json not yet created")
+
+        with provenance_path.open() as f:
+            provenance = json.load(f)
+
+        actual_checksum = _compute_checksum_for_npy_files(fixture_dir)
+        assert actual_checksum == provenance["checksum_sha256"], (
+            f"SPEIbase fixture checksum mismatch. "
+            f"Expected: {provenance['checksum_sha256']}, "
+            f"Actual: {actual_checksum}. "
+            f"If the fixture data was intentionally refreshed, "
+            f"rerun scripts/prepare_speibase_fixtures.py."
+        )
+
+    def test_spei_loglogistic_checksum_matches(self) -> None:
+        """Verify the R SPEI log-logistic fixture checksum matches provenance.json.
+
+        The checksum covers the complete canonical array set, so a corrupted,
+        partially refreshed, or replaced array fails loudly before the set is
+        used as an independent-implementation reference.
+        """
+        fixture_dir = FIXTURE_DIR / "spei_loglogistic"
+        provenance_path = fixture_dir / "provenance.json"
+        if not provenance_path.exists():
+            pytest.skip("SPEI log-logistic provenance.json not yet created")
+
+        with provenance_path.open() as f:
+            provenance = json.load(f)
+
+        actual_checksum = _compute_checksum_for_npy_files(fixture_dir)
+        assert actual_checksum == provenance["checksum_sha256"], (
+            f"SPEI log-logistic fixture checksum mismatch. "
+            f"Expected: {provenance['checksum_sha256']}, "
+            f"Actual: {actual_checksum}. "
+            f"If the fixture data was intentionally refreshed, "
+            f"rerun scripts/prepare_spei_loglogistic_fixtures.py."
+        )
+
+    def test_zero_handling_checksum_matches(self) -> None:
+        """Verify the R SEI/SCI zero-placement fixture checksum matches provenance.json.
+
+        The checksum covers the shared input and every SEI/SCI reference array,
+        so a partially refreshed or corrupted fixture fails before it is used as
+        an independent-implementation comparison.
+        """
+        fixture_dir = FIXTURE_DIR / "zero_handling"
+        provenance_path = fixture_dir / "provenance.json"
+        assert provenance_path.exists(), "zero_handling provenance.json missing"
+
+        with provenance_path.open() as f:
+            provenance = json.load(f)
+
+        actual_checksum = _compute_checksum_for_npy_files(fixture_dir)
+        assert actual_checksum == provenance["checksum_sha256"], (
+            f"zero_handling fixture checksum mismatch. "
+            f"Expected: {provenance['checksum_sha256']}, "
+            f"Actual: {actual_checksum}. "
+            f"If the fixture data was intentionally refreshed, "
+            f"rerun scripts/prepare_zero_handling_fixtures.py."
+        )
+
+
+class TestProvenanceProtocolCoverage:
+    """Ensure provenance protocol is being followed for reference datasets."""
+
+    def test_at_least_one_provenance_exists(self) -> None:
+        """Verify that at least one provenance.json has been created."""
+        provenance_files = _find_provenance_files()
+        assert len(provenance_files) > 0, (
+            "No provenance.json files found under tests/fixture/. Reference datasets must have provenance metadata."
+        )
+
+    def test_fixture_readme_exists(self) -> None:
+        """Verify the fixture README documenting the protocol exists."""
+        readme = FIXTURE_DIR / "README.md"
+        assert readme.exists(), "tests/fixture/README.md not found. The provenance protocol documentation is required."

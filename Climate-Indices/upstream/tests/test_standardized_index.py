@@ -1,0 +1,381 @@
+"""Parity and contract tests for the generic public standardized_index() API (issue #1113)."""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Callable
+
+import numpy as np
+import pytest
+
+from climate_indices import compute, indices
+
+# scale, distribution, calibration-start fixture, calibration-end fixture, golden SPI fixture
+_PARITY_CASES = (
+    (1, indices.Distribution.gamma, "data_year_start_monthly", "data_year_end_monthly", "spi_1_month_gamma"),
+    (6, indices.Distribution.gamma, "data_year_start_monthly", "data_year_end_monthly", "spi_6_month_gamma"),
+    (
+        6,
+        indices.Distribution.pearson,
+        "calibration_year_start_monthly",
+        "calibration_year_end_monthly",
+        "spi_6_month_pearson3",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("scale", "distribution", "calibration_start", "calibration_end", "expected_fixture"), _PARITY_CASES
+)
+def test_standardized_index_matches_pinned_spi_result(
+    request,
+    precips_mm_monthly,
+    data_year_start_monthly,
+    scale: int,
+    distribution: indices.Distribution,
+    calibration_start: str,
+    calibration_end: str,
+    expected_fixture: str,
+) -> None:
+    """Golden SPI fixtures pin standardized_index independently of spi() itself."""
+    expected = request.getfixturevalue(expected_fixture)
+    calibration_initial = request.getfixturevalue(calibration_start)
+    calibration_final = request.getfixturevalue(calibration_end)
+    values = np.asarray(precips_mm_monthly).flatten()
+
+    computed = indices.standardized_index(
+        values=values,
+        scale=scale,
+        distribution=distribution,
+        data_start_year=data_year_start_monthly,
+        calibration_year_initial=calibration_initial,
+        calibration_year_final=calibration_final,
+        periodicity=compute.Periodicity.monthly,
+    )
+    spi = indices.spi(
+        values=values,
+        scale=scale,
+        distribution=distribution,
+        data_start_year=data_year_start_monthly,
+        calibration_year_initial=calibration_initial,
+        calibration_year_final=calibration_final,
+        periodicity=compute.Periodicity.monthly,
+    )
+
+    np.testing.assert_array_equal(computed, spi)
+    np.testing.assert_allclose(computed, expected, atol=1e-8)
+
+
+@pytest.mark.usefixtures(
+    "precips_mm_daily",
+    "data_year_start_daily",
+    "calibration_year_start_daily",
+    "calibration_year_end_daily",
+)
+def test_standardized_index_matches_spi_for_daily_periodicity(
+    precips_mm_daily,
+    data_year_start_daily,
+    calibration_year_start_daily,
+    calibration_year_end_daily,
+) -> None:
+    """Daily series use the same pipeline, including the 366-day calendar handling."""
+    values = np.asarray(precips_mm_daily).flatten()
+
+    standardized = indices.standardized_index(
+        values,
+        60,
+        indices.Distribution.gamma,
+        data_year_start_daily,
+        calibration_year_start_daily,
+        calibration_year_end_daily,
+        compute.Periodicity.daily,
+    )
+    spi = indices.spi(
+        values,
+        60,
+        indices.Distribution.gamma,
+        data_year_start_daily,
+        calibration_year_start_daily,
+        calibration_year_end_daily,
+        compute.Periodicity.daily,
+    )
+
+    np.testing.assert_array_equal(standardized, spi)
+
+
+@pytest.mark.usefixtures(
+    "precips_mm_monthly",
+    "data_year_start_monthly",
+    "calibration_year_start_monthly",
+    "calibration_year_end_monthly",
+)
+def test_standardized_index_uses_supplied_fitting_params(
+    precips_mm_monthly,
+    data_year_start_monthly,
+    calibration_year_start_monthly,
+    calibration_year_end_monthly,
+) -> None:
+    """Pre-computed fitting parameters reach the shared fit/standardize seam unchanged."""
+    values = np.asarray(precips_mm_monthly).flatten()
+    fitting_params = {"alpha": np.full(12, 4.0), "beta": np.full(12, 8.0)}
+
+    standardized = indices.standardized_index(
+        values,
+        6,
+        indices.Distribution.gamma,
+        data_year_start_monthly,
+        calibration_year_start_monthly,
+        calibration_year_end_monthly,
+        compute.Periodicity.monthly,
+        fitting_params,
+    )
+    spi = indices.spi(
+        values,
+        6,
+        indices.Distribution.gamma,
+        data_year_start_monthly,
+        calibration_year_start_monthly,
+        calibration_year_end_monthly,
+        compute.Periodicity.monthly,
+        fitting_params,
+    )
+
+    np.testing.assert_array_equal(standardized, spi)
+
+
+@pytest.mark.usefixtures(
+    "precips_mm_monthly",
+    "data_year_start_monthly",
+    "calibration_year_start_monthly",
+    "calibration_year_end_monthly",
+)
+def test_standardized_index_accepts_declared_spatial_blocks(
+    precips_mm_monthly,
+    data_year_start_monthly,
+    calibration_year_start_monthly,
+    calibration_year_end_monthly,
+) -> None:
+    """The ambiguous (time, 12, *cells) layout needs the same declaration spi() requires."""
+    block = np.asarray(precips_mm_monthly).reshape(123, 12, 1)
+    arguments = (
+        block,
+        6,
+        indices.Distribution.gamma,
+        data_year_start_monthly,
+        calibration_year_start_monthly,
+        calibration_year_end_monthly,
+        compute.Periodicity.monthly,
+    )
+
+    with pytest.raises(ValueError, match="spatial_time_major=True"):
+        indices.standardized_index(*arguments)
+
+    standardized = indices.standardized_index(*arguments, spatial_time_major=True)
+    spi = indices.spi(*arguments, spatial_time_major=True)
+
+    assert standardized.shape == block.shape
+    np.testing.assert_array_equal(standardized, spi)
+
+
+@pytest.mark.usefixtures(
+    "precips_mm_monthly",
+    "data_year_start_monthly",
+    "calibration_year_start_monthly",
+    "calibration_year_end_monthly",
+)
+def test_standardized_index_reports_its_own_fallback_context(
+    precips_mm_monthly,
+    data_year_start_monthly,
+    calibration_year_start_monthly,
+    calibration_year_end_monthly,
+    caplog,
+) -> None:
+    """A Pearson-to-gamma fallback names the generic index, not SPI, in its warning."""
+    values = np.full(np.asarray(precips_mm_monthly).size, 5.0)
+
+    caplog.set_level(logging.WARNING)
+    indices.standardized_index(
+        values,
+        6,
+        indices.Distribution.pearson,
+        data_year_start_monthly,
+        calibration_year_start_monthly,
+        calibration_year_end_monthly,
+        compute.Periodicity.monthly,
+    )
+
+    fallbacks = [
+        record.msg
+        for record in caplog.records
+        if isinstance(record.msg, dict) and record.msg.get("event") == "distribution_fallback"
+    ]
+    assert len(fallbacks) == 1
+    assert fallbacks[0]["context"] == "standardized index computation"
+    assert fallbacks[0]["from_distribution"] == "pearson"
+    assert fallbacks[0]["to_distribution"] == "gamma"
+
+
+@pytest.mark.parametrize("index", [indices.spi, indices.standardized_index])
+def test_failed_pearson_periods_get_zeroed_parameters_not_the_gamma_fallback(
+    index: Callable[..., np.ndarray], caplog: pytest.LogCaptureFixture
+) -> None:
+    """Every calendar period failing the non-zero minimum does not by itself fall back (#1128)."""
+    # 30 years of zeros except the last 3: each calendar month has 3 non-zero 12-month
+    # sums, one short of MIN_NON_ZERO_VALUES_FOR_PEARSON, so all 12 periods fail
+    values = np.zeros(30 * 12)
+    values[-36:] = np.linspace(10.0, 80.0, 36)
+
+    caplog.set_level(logging.WARNING)
+    result = index(values, 12, indices.Distribution.pearson, 1990, 1990, 2019, compute.Periodicity.monthly)
+
+    assert not [
+        record
+        for record in caplog.records
+        if isinstance(record.msg, dict) and record.msg.get("event") == "distribution_fallback"
+    ]
+    # zeroed parameters pin the zero sums to the lower bound and lose the non-zero ones,
+    # which stay below the half-of-valid-values loss that would trigger the fallback
+    np.testing.assert_array_equal(result[11:-36], -3.09)
+    assert np.isnan(result[:11]).all()
+    assert np.isnan(result[-36:]).all()
+
+
+@pytest.mark.parametrize(
+    ("parameters", "match"),
+    [
+        ({"loc": np.ones(12), "scale": np.ones(12), "skew": np.ones(12)}, "either none or all"),
+        (
+            {"prob_zero": np.zeros(11), "loc": np.ones(11), "scale": np.ones(11), "skew": np.ones(11)},
+            "must carry the period length",
+        ),
+    ],
+)
+def test_spi_and_spei_raise_the_same_error_for_a_bad_pearson_parameter_set(
+    precips_mm_monthly,
+    data_year_start_monthly,
+    calibration_year_start_monthly,
+    calibration_year_end_monthly,
+    parameters,
+    match,
+) -> None:
+    """A caller's argument error raises from SPI instead of silently becoming gamma (#1215)."""
+    values = np.asarray(precips_mm_monthly)
+
+    with pytest.raises(ValueError, match=match) as spi_error:
+        indices.spi(
+            values,
+            6,
+            indices.Distribution.pearson,
+            data_year_start_monthly,
+            calibration_year_start_monthly,
+            calibration_year_end_monthly,
+            compute.Periodicity.monthly,
+            parameters,
+        )
+    with pytest.raises(ValueError, match=match) as spei_error:
+        indices.spei(
+            values,
+            values * 0.5,
+            6,
+            indices.Distribution.pearson,
+            compute.Periodicity.monthly,
+            data_year_start_monthly,
+            calibration_year_start_monthly,
+            calibration_year_end_monthly,
+            parameters,
+        )
+
+    assert str(spi_error.value) == str(spei_error.value)
+
+
+@pytest.mark.usefixtures(
+    "precips_mm_monthly",
+    "data_year_start_monthly",
+    "calibration_year_start_monthly",
+    "calibration_year_end_monthly",
+)
+def test_standardized_index_aggregation_defaults_to_the_sum_spi_uses(
+    precips_mm_monthly,
+    data_year_start_monthly,
+    calibration_year_start_monthly,
+    calibration_year_end_monthly,
+) -> None:
+    """Naming the sum changes nothing: the default is the SPI accumulation, bit for bit (ADR-0019)."""
+    values = np.asarray(precips_mm_monthly).flatten()
+    arguments = (
+        values,
+        6,
+        indices.Distribution.gamma,
+        data_year_start_monthly,
+        calibration_year_start_monthly,
+        calibration_year_end_monthly,
+        compute.Periodicity.monthly,
+    )
+
+    np.testing.assert_array_equal(
+        indices.standardized_index(*arguments, aggregation="sum"),
+        indices.standardized_index(*arguments),
+    )
+    np.testing.assert_array_equal(indices.standardized_index(*arguments), indices.spi(*arguments))
+
+
+@pytest.mark.usefixtures(
+    "precips_mm_monthly",
+    "data_year_start_monthly",
+    "calibration_year_start_monthly",
+    "calibration_year_end_monthly",
+)
+def test_standardized_index_mean_aggregation_reaches_the_seam(
+    precips_mm_monthly,
+    data_year_start_monthly,
+    calibration_year_start_monthly,
+    calibration_year_end_monthly,
+) -> None:
+    """A mean over the scale is the sum of the series divided by the scale, scored on a fixed fit.
+
+    A fitted gamma is scale-equivariant, so only a fit held fixed through ``fitting_params``
+    can tell a mean from a sum.
+    """
+    values = np.asarray(precips_mm_monthly).flatten()
+    fitting_params = {"alpha": np.full(12, 4.0), "beta": np.full(12, 8.0)}
+    tail = (
+        indices.Distribution.gamma,
+        data_year_start_monthly,
+        calibration_year_start_monthly,
+        calibration_year_end_monthly,
+        compute.Periodicity.monthly,
+        fitting_params,
+    )
+
+    averaged = indices.standardized_index(values, 6, *tail, aggregation="mean")
+    summed = indices.standardized_index(values, 6, *tail)
+
+    np.testing.assert_allclose(averaged, indices.standardized_index(values / 6, 6, *tail), atol=1e-9)
+    assert not np.allclose(averaged, summed, equal_nan=True)
+
+
+def test_standardized_index_rejects_an_unknown_aggregation(
+    precips_mm_monthly,
+    data_year_start_monthly,
+    calibration_year_start_monthly,
+    calibration_year_end_monthly,
+) -> None:
+    """An aggregation other than sum or mean fails loudly instead of silently summing."""
+    values = np.asarray(precips_mm_monthly).flatten()
+    with pytest.raises(ValueError, match="Invalid aggregation argument"):
+        indices.standardized_index(
+            values,
+            6,
+            indices.Distribution.gamma,
+            data_year_start_monthly,
+            calibration_year_start_monthly,
+            calibration_year_end_monthly,
+            compute.Periodicity.monthly,
+            aggregation="median",  # type: ignore[arg-type]
+        )
+
+
+def test_standardized_index_is_exported_from_the_indices_module() -> None:
+    """The generic NumPy API is public through the module that carries the stable NumPy API."""
+    assert "standardized_index" in indices.__all__
+    assert callable(indices.standardized_index)

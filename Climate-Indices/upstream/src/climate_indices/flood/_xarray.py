@@ -1,0 +1,171 @@
+"""Stable xarray dispatch for daily flood-potential indices, which describe flood potential, not flooding."""
+
+from __future__ import annotations
+
+import numpy as np
+import xarray as xr
+
+from climate_indices._recurrence import _validate_recurrence_options
+from climate_indices._stateful_xarray import StatefulAlignment, stateful_recurrence_xarray
+from climate_indices._units import _convert_precipitation_units
+from climate_indices.cf_metadata_registry import CF_METADATA
+from climate_indices.compute import Periodicity
+from climate_indices.flood._antecedent import APIResult, APIState, _resume_state, _validate_decay
+from climate_indices.flood._antecedent import antecedent_precipitation_index as _numpy_api
+from climate_indices.flood._edi import edi as _numpy_edi
+from climate_indices.flood._if import flood_index as _numpy_flood_index
+from climate_indices.flood._pe import effective_precipitation as _numpy_pe
+from climate_indices.xarray_adapter import (
+    INFER_TIME_PARAMETERS,
+    _wrap_spatial,
+    build_output_attrs,
+    xarray_adapter,
+)
+
+# The flood cores validate their own options inside the kernel, so the flood
+# registrations declare no separate validators.
+_wrapped_pe = xarray_adapter(
+    calendar=Periodicity.daily,
+    argument_validators=(),
+    cf_metadata=CF_METADATA["effective_precipitation"],  # type: ignore[arg-type]
+    index_display_name="Effective Precipitation",
+    calculation_metadata_keys=["duration"],
+    spatial_kernel=True,
+    validate_calibration_sample=False,
+)(_numpy_pe)
+_wrapped_edi = xarray_adapter(
+    calendar=Periodicity.daily,
+    inferred_parameters={k: v for k, v in INFER_TIME_PARAMETERS.items() if k != "periodicity"},
+    argument_validators=(),
+    cf_metadata=CF_METADATA["edi"],  # type: ignore[arg-type]
+    index_display_name="EDI",
+    calculation_metadata_keys=["calibration_year_initial", "calibration_year_final"],
+    spatial_kernel=True,
+    validate_calibration_sample=False,
+)(_numpy_edi)
+_wrapped_flood_index = xarray_adapter(
+    calendar=Periodicity.daily,
+    inferred_parameters={k: v for k, v in INFER_TIME_PARAMETERS.items() if k != "periodicity"},
+    argument_validators=(),
+    cf_metadata=CF_METADATA["flood_index"],  # type: ignore[arg-type]
+    index_display_name="Flood Index",
+    calculation_metadata_keys=["year_start_month", "calibration_year_initial", "calibration_year_final"],
+    spatial_kernel=True,
+    validate_calibration_sample=False,
+)(_numpy_flood_index)
+
+
+def _api_block(
+    values: np.ndarray,
+    *state: np.ndarray,
+    k: float,
+    spin_up: int,
+    nan_policy: str,
+    max_gap_days: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Run the NumPy recurrence on one Spatial Block, time on the last axis."""
+    initial = None
+    time_first = np.moveaxis(values, -1, 0).copy()
+    # A 2-D NumPy input means (years, days), not a Spatial Block.
+    single_spatial_axis = time_first.ndim == 2
+    if single_spatial_axis:
+        time_first = time_first[..., None]
+    if state:
+        gaps = state[1].astype(np.int64)
+        api_seed = state[0].copy()
+        if single_spatial_axis:
+            gaps = gaps[..., None]
+            api_seed = api_seed[..., None]
+        initial = APIState(api_seed, None if np.all(gaps < 0) else gaps.copy())
+    result = _numpy_api(
+        time_first,
+        k,
+        initial_state=initial,
+        return_state=True,
+        spin_up=spin_up,
+        nan_policy=nan_policy,  # type: ignore[arg-type]
+        max_gap_days=max_gap_days,
+        spatial_time_major=True,
+    )
+    assert isinstance(result, APIResult)
+    assert isinstance(result.values, np.ndarray)
+    gaps_out = result.state.trailing_gap_days
+    if gaps_out is None:
+        gaps_out = np.full(result.state.api.shape, -1, dtype=np.int64)
+    if single_spatial_axis:
+        return np.moveaxis(result.values[..., 0], 0, -1), result.state.api[..., 0], gaps_out[..., 0]
+    return np.moveaxis(result.values, 0, -1), result.state.api, gaps_out
+
+
+def _api_xarray(
+    precipitation: xr.DataArray,
+    k: float,
+    *,
+    initial_state: APIState | None,
+    return_state: bool,
+    spin_up: int,
+    nan_policy: str,
+    max_gap_days: int,
+    time_dim: str,
+) -> xr.DataArray | APIResult:
+    """Run the NumPy recurrence per spatial block, returning NumPy state."""
+    _validate_decay(k)
+    _validate_recurrence_options(nan_policy, max_gap_days, spin_up, "initial_state", None, initial_state)
+    spin_up = int(spin_up)
+    rain = convert_pe_input(precipitation, argument_name="precipitation")
+
+    def build_extra_inputs(alignment: StatefulAlignment) -> tuple[tuple[xr.DataArray, None], ...]:
+        if initial_state is None:
+            return ()
+        # Reject invalid state before returning a lazy graph; the core validates each tile again.
+        seed_api, seed_gaps = _resume_state(initial_state, alignment.internal_spatial_shape)
+        seed_shape = alignment.spatial_shape
+        return tuple(
+            (
+                _wrap_spatial(
+                    seed.reshape(seed_shape), seed_shape, alignment.spatial_dims, chunks=alignment.spatial_chunks
+                ),
+                None,
+            )
+            for seed in (seed_api, seed_gaps)
+        )
+
+    adapter_output = stateful_recurrence_xarray(
+        [("precipitation", rain)],
+        _api_block,
+        time_dim=time_dim,
+        spin_up=spin_up,
+        output_core_dims=[time_dim, None, None],
+        output_dtypes=[float, float, np.int64],
+        index_display_name="API",
+        build_extra_inputs=build_extra_inputs,
+        kernel_kwargs={"k": k, "spin_up": spin_up, "nan_policy": nan_policy, "max_gap_days": max_gap_days},
+    )
+    values, api, gaps = adapter_output.outputs
+    values.attrs = build_output_attrs(
+        precipitation,
+        cf_metadata=CF_METADATA["antecedent_precipitation_index"],  # type: ignore[arg-type]
+        calculation_metadata={"k": k, "nan_policy": nan_policy, "max_gap_days": max_gap_days},
+        index_name="API",
+    )
+    if not return_state:
+        result_da: xr.DataArray = values
+        return result_da
+    # Load the shared graph once so the state and values describe the same computation.
+    loaded = xr.Dataset({"values": values, "api": api, "gaps": gaps}).load()
+    final_gaps = loaded["gaps"].values
+    return APIResult(
+        values=loaded["values"].rename(values.name),
+        state=APIState(loaded["api"].values, None if np.all(final_gaps < 0) else final_gaps),
+    )
+
+
+def convert_pe_input(data: xr.DataArray, *, argument_name: str) -> xr.DataArray:
+    """Convert daily precipitation or effective precipitation to millimeters lazily."""
+    converted = _convert_precipitation_units(data, "mm", argument_name=f"{argument_name}.attrs['units']")
+    # Unconverted units return the original object; never change caller metadata.
+    if converted is data:
+        converted = data.copy(deep=False)
+    # xarray arithmetic drops attrs; keep source history for the adapter's output.
+    converted.attrs = {**data.attrs, "units": "mm"}
+    return converted

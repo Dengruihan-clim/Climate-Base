@@ -1,0 +1,313 @@
+"""Public-contract and oracle validation tests for :func:`palmer.scpdsi`."""
+
+import inspect
+import os
+from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+
+from climate_indices import palmer
+from climate_indices._palmer_duration import DurationFactors
+from climate_indices.exceptions import ConvergenceError
+
+ATOL = 5e-5
+RTOL = 0
+_FIXTURE_ROOT = Path(__file__).parent / "fixture"
+_PALMER_ROOT = _FIXTURE_ROOT / "palmer"
+
+
+def _call(inputs: dict[str, tuple[np.ndarray, np.ndarray, float]], division: str = "0101", fitting_params=None):
+    precips, pet, awc = inputs[division]
+    return palmer.scpdsi(precips, pet, awc, 1895, 1931, 1990, fitting_params)
+
+
+def test_public_signature_matches_pdsi_and_is_exported():
+    """scpdsi() intentionally omits pdsi()'s spatial_time_major.
+
+    scpdsi() runs the Wells backtracking recursion and per-location
+    duration-factor fits per cell, so it stays on the per-location path
+    (ADR-0011) while pdsi() vectorizes across a spatial block's cells --
+    including AWC, which pdsi() accepts as a scalar or a per-cell array and
+    scpdsi() keeps scalar-only. Every parameter name, position, and default
+    must still match exactly; only these two annotations may differ.
+    """
+    assert "scpdsi" in palmer.__all__
+    pdsi_params = inspect.signature(palmer.pdsi).parameters
+    scpdsi_params = inspect.signature(palmer.scpdsi).parameters
+    assert set(pdsi_params) - set(scpdsi_params) == {"spatial_time_major"}
+    shared = [name for name in pdsi_params if name != "spatial_time_major"]
+    assert shared == list(scpdsi_params)
+    for name in shared:
+        pdsi_param = pdsi_params[name]
+        scpdsi_param = scpdsi_params[name]
+        assert pdsi_param.default == scpdsi_param.default
+        assert pdsi_param.kind == scpdsi_param.kind
+        if name != "awc":
+            assert pdsi_param.annotation == scpdsi_param.annotation
+
+
+def test_all_missing_input_returns_four_same_length_missing_arrays_and_no_params():
+    precips = np.full(13, np.nan)
+    pet = np.full(13, np.nan)
+
+    scpdsi, scphdi, scpmdi, sczindex, params = palmer.scpdsi(precips, pet, 5.0, 2000, 2000, 2000)
+
+    for values in (scpdsi, scphdi, scpmdi, sczindex):
+        assert values.shape == precips.shape
+        assert np.isnan(values).all()
+    assert params is None
+
+
+def test_mismatched_inputs_raise_the_same_error_as_pdsi():
+    with pytest.raises(ValueError, match="Incompatible precipitation and PET arrays"):
+        palmer.scpdsi(np.ones(60), np.ones(59), 5.0, 2000, 2000, 2004)
+
+
+@pytest.mark.parametrize("function", [palmer.pdsi, palmer.scpdsi])
+def test_mismatched_inputs_raise_before_the_all_missing_fast_path(function):
+    with pytest.raises(ValueError, match="Incompatible precipitation and PET arrays"):
+        function(np.full(60, np.nan), np.ones(59), 5.0, 2000, 2000, 2004)
+
+
+@pytest.mark.parametrize(
+    ("calibration_year_initial", "calibration_year_final"),
+    [(1894, 1990), (1931, 2023), (1990, 1931)],
+)
+def test_invalid_calibration_period_raises_value_error(
+    calibration_year_initial, calibration_year_final, palmer_division_inputs
+):
+    precips, pet, awc = palmer_division_inputs["0101"]
+
+    with pytest.raises(ValueError, match="calibration period"):
+        palmer.scpdsi(
+            precips,
+            pet,
+            awc,
+            1895,
+            calibration_year_initial,
+            calibration_year_final,
+        )
+
+
+@pytest.mark.parametrize(
+    ("calibration_year_initial", "calibration_year_final"),
+    [(1999, 2000), (2000, 2001), (2000, 1999)],
+)
+def test_all_missing_input_still_validates_the_calibration_period(calibration_year_initial, calibration_year_final):
+    precips = np.full(12, np.nan)
+    pet = np.full(12, np.nan)
+
+    with pytest.raises(ValueError, match="calibration period"):
+        palmer.scpdsi(
+            precips,
+            pet,
+            5.0,
+            2000,
+            calibration_year_initial,
+            calibration_year_final,
+        )
+
+
+@pytest.mark.parametrize("function", [palmer.pdsi, palmer.scpdsi])
+def test_negative_precipitation_is_clipped_even_when_other_values_are_missing(function, palmer_division_inputs):
+    precips, pet, awc = palmer_division_inputs["0101"]
+    mixed = precips.copy()
+    mixed[-2] = -10.0
+    mixed[-1] = np.nan
+    expected_input = mixed.copy()
+    expected_input[-2] = 0.0
+
+    actual = function(mixed, pet, awc, 1895, 1931, 1990)
+    expected = function(expected_input, pet, awc, 1895, 1931, 1990)
+
+    for actual_values, expected_values in zip(actual[:4], expected[:4], strict=True):
+        np.testing.assert_allclose(actual_values, expected_values, rtol=0, atol=0, equal_nan=True)
+
+
+@pytest.mark.parametrize("function", [palmer.pdsi, palmer.scpdsi])
+def test_infinite_inputs_are_rejected(function, palmer_division_inputs):
+    # copy: the shared session fixture must not carry the injected infinity forward
+    precips, pet, awc = palmer_division_inputs["0101"]
+    precips = precips.copy()
+    precips[-1] = np.inf
+
+    with pytest.raises(ValueError, match="infinite"):
+        function(precips, pet, awc, 1895, 1931, 1990)
+
+
+def test_supplied_cafec_coefficients_are_reused_but_duration_factors_are_recalibrated(palmer_division_inputs):
+    _, _, _, _, standard_params = _call(palmer_division_inputs)
+    assert standard_params is not None
+    supplied = dict(standard_params)
+    supplied.update(wetm=-99.0, wetb=-99.0, drym=-99.0, dryb=-99.0)
+
+    *_, params = _call(palmer_division_inputs, fitting_params=supplied)
+
+    assert params is not None
+    for name in ("alpha", "beta", "gamma", "delta"):
+        np.testing.assert_array_equal(params[name], standard_params[name])
+    expected = np.load(_PALMER_ROOT / "0101" / "scdurfact.npy")
+    np.testing.assert_allclose(
+        [params["wetm"], params["wetb"], params["drym"], params["dryb"]],
+        expected,
+        atol=ATOL,
+        rtol=RTOL,
+    )
+
+
+def test_scpdsi_reports_its_fixed_three_rescaling_passes(palmer_division_inputs):
+    """The Z-index rescaling loop count is part of the returned diagnostics.
+
+    The loop is a fixed three passes rather than an iteration to a fixed point
+    (see ``test_scpdsi_rescales_zindex_cumulatively`` for the cumulative
+    behavior those passes produce), so the count is reported instead of being
+    pinned by monkeypatching the recursion.
+    """
+    *_, params = _call(palmer_division_inputs)
+
+    assert params is not None
+    assert params["rescale_passes"] == 3
+
+
+def test_scpdsi_rescales_zindex_cumulatively(monkeypatch, palmer_division_inputs):
+    """Each of the three rescaling passes multiplies the working Z, not the raw Z.
+
+    Percentiles are pinned to constant anchors so each pass applies a known
+    ratio: a no-op anchor pair returns the raw Z, and the 2.0-ratio pair must
+    return raw * 2**3. A single pass, a shorter loop, or rescaling from the raw
+    Z every pass fails the exact equality here.
+    """
+    precips, pet, awc = palmer_division_inputs["0101"]
+    # duration factors must be pinned too: the real fit itself calls
+    # nan_safe_percentile, so patching percentiles alone leaves an
+    # inconsistent calibration (and can trip ConvergenceError)
+    monkeypatch.setattr(palmer.self_calibration, "duration_factors", lambda _z, _sign: (1.0, 1.0))
+
+    def sczindex(dry: float, wet: float) -> np.ndarray:
+        monkeypatch.setattr(
+            palmer.self_calibration,
+            "nan_safe_percentile",
+            lambda _values, fraction: dry if fraction == 0.02 else wet,
+        )
+        return palmer.scpdsi(precips, pet, awc, 1895, 1931, 1990)[3]
+
+    raw_z = sczindex(-4.0, 4.0)  # ratio 1.0: three no-op passes
+    rescaled = sczindex(-2.0, 2.0)  # ratio 2.0 per pass
+
+    assert np.isfinite(raw_z).any()
+    np.testing.assert_allclose(rescaled, raw_z * 8.0, rtol=0, atol=0, equal_nan=True)
+
+
+def test_sczindex_matches_the_committed_0101_oracle(palmer_division_inputs):
+    """The rescaling passes' real-data result is pinned outside the validation marker.
+
+    The cumulative test above pins the pass arithmetic against monkeypatched
+    percentiles; this one pins the committed 0101 Z-index the same way the
+    ``validation``-marked oracle does, so a rescaling change fails plain
+    ``uv run pytest`` as well.
+    """
+    _, _, _, sczindex, _ = _call(palmer_division_inputs)
+
+    np.testing.assert_allclose(
+        sczindex,
+        np.load(_PALMER_ROOT / "0101" / "sczindex.npy"),
+        atol=ATOL,
+        rtol=RTOL,
+        equal_nan=True,
+    )
+
+
+def test_invalid_fitted_duration_factors_raise_convergence_error(monkeypatch, palmer_division_inputs):
+    monkeypatch.setattr(palmer.self_calibration, "duration_factors", lambda _z, _sign: (-1.0, 1.0))
+
+    with pytest.raises(ConvergenceError, match="duration factors"):
+        _call(palmer_division_inputs)
+
+
+@pytest.mark.parametrize(("dry", "wet"), [(0.0, 2.0), (-2.0, 0.0), (1.0, 2.0), (-2.0, -1.0)])
+def test_invalid_calibration_percentiles_raise_convergence_error(monkeypatch, dry, wet, palmer_division_inputs):
+    def fake_calculate(z, **_kwargs):
+        values = np.where(np.isnan(z), np.nan, 1.0)
+        return SimpleNamespace(pdsi=values, phdi=values, pmdi=values)
+
+    monkeypatch.setattr(palmer.self_calibration, "duration_factors", lambda _z, _sign: (1.0, 1.0))
+    monkeypatch.setattr(
+        palmer.self_calibration,
+        "nan_safe_percentile",
+        lambda _values, fraction: dry if fraction == 0.02 else wet,
+    )
+    monkeypatch.setattr(palmer._palmer_wells, "calculate", fake_calculate)
+
+    with pytest.raises(ConvergenceError, match="percentile anchors"):
+        _call(palmer_division_inputs)
+
+
+def test_scpdsi_oracle_contains_all_climate_divisions(palmer_division_dirs):
+    assert len(palmer_division_dirs) == 344
+
+
+@pytest.mark.validation
+def test_climate_division_matches_scpdsi_oracle(palmer_division_dir, palmer_division_inputs, request):
+    division = palmer_division_dir.name
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        scpdsi, scphdi, scpmdi, sczindex, params = _call(palmer_division_inputs, division)
+    else:
+        # Direct fixture injection reruns the 344-division sweep in every xdist worker.
+        scpdsi, scphdi, scpmdi, sczindex, params = request.getfixturevalue("palmer_scpdsi_results")[division]  # NOSONAR
+    assert params is not None
+
+    for name, actual in (
+        ("scpdsi", scpdsi),
+        ("scphdi", scphdi),
+        ("scpmdi", scpmdi),
+        ("sczindex", sczindex),
+    ):
+        np.testing.assert_allclose(
+            actual,
+            np.load(palmer_division_dir / f"{name}.npy"),
+            atol=ATOL,
+            rtol=RTOL,
+            equal_nan=True,
+            err_msg=f"{division}: {name} mismatch",
+        )
+
+    np.testing.assert_allclose(
+        [params["wetm"], params["wetb"], params["drym"], params["dryb"]],
+        np.load(palmer_division_dir / "scdurfact.npy"),
+        atol=ATOL,
+        rtol=RTOL,
+        err_msg=f"{division}: duration factors mismatch",
+    )
+
+
+@pytest.mark.validation
+def test_fitted_duration_factor_coefficients_stay_contractions(palmer_division_dirs):
+    """Real-data duration factors must keep the Wells coefficients contracting.
+
+    ``DurationFactors.from_fitted`` rejects any coefficient with magnitude
+    >= 1. Across these 344 divisions the coefficients peak at ~0.983, i.e. only
+    ~1.7% of margin. This pins that margin: erosion fails here, with the worst
+    division named, rather than surfacing later as a ConvergenceError on user
+    data. ``test_climate_division_matches_scpdsi_oracle`` ties the library's
+    fitted factors to the same ``scdurfact.npy`` values read here.
+    """
+    worst = {"wetc": (0.0, ""), "dryc": (0.0, ""), "dry_spell_c": (0.0, "")}
+    for division_dir in palmer_division_dirs:
+        wetm, wetb, drym, dryb = (float(value) for value in np.load(division_dir / "scdurfact.npy"))
+        try:
+            factors = DurationFactors.from_fitted(wetm, wetb, drym, dryb)
+        except ConvergenceError as error:
+            pytest.fail(f"{division_dir.name}: {error}")
+        coefficients = {
+            "wetc": factors.wetc,
+            "dryc": factors.dryc,
+            "dry_spell_c": factors.dry_spell_c,
+        }
+        for name, value in coefficients.items():
+            if abs(value) > worst[name][0]:
+                worst[name] = (abs(value), division_dir.name)
+
+    for name, (magnitude, division) in worst.items():
+        assert magnitude < 0.99, f"{name} margin eroded to {magnitude:.5f} at division {division}"

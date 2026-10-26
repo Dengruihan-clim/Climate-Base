@@ -1,0 +1,276 @@
+"""Tests for PNP (Percentage of Normal) xarray adapter integration.
+
+Validates xarray DataArray support for percentage_of_normal() via the
+typed_public_api, including numerical equivalence with the NumPy path,
+CF metadata application, and coordinate preservation.
+"""
+
+from __future__ import annotations
+
+import warnings
+
+import numpy as np
+import pytest
+import xarray as xr
+
+from climate_indices import percentage_of_normal
+from climate_indices.compute import Periodicity
+from climate_indices.exceptions import ClimateIndicesDeprecationWarning
+from climate_indices.indices import percentage_of_normal as numpy_pnp
+
+
+@pytest.fixture(scope="module")
+def pnp_xarray_result(sample_monthly_precip_da: xr.DataArray) -> xr.DataArray:
+    """Cached PNP-6 result for 1D monthly precipitation DataArray."""
+    return percentage_of_normal(
+        values=sample_monthly_precip_da,
+        scale=6,
+    )
+
+
+@pytest.fixture(scope="module")
+def pnp_numpy_result(sample_monthly_precip_da: xr.DataArray) -> np.ndarray:
+    """PNP-6 result computed via the NumPy path for equivalence comparison."""
+    # extract start year from the DataArray time coordinate
+    start_year = int(sample_monthly_precip_da.time.dt.year.values[0])
+    end_year = int(sample_monthly_precip_da.time.dt.year.values[-1])
+    return numpy_pnp(
+        values=sample_monthly_precip_da.values,
+        scale=6,
+        data_start_year=start_year,
+        calibration_year_initial=start_year,
+        calibration_year_final=end_year,
+        periodicity=Periodicity.monthly,
+    )
+
+
+class TestPNPXarrayEquivalence:
+    """Validate numerical equivalence between NumPy and xarray paths."""
+
+    def test_values_match_numpy(
+        self,
+        pnp_xarray_result: xr.DataArray,
+        pnp_numpy_result: np.ndarray,
+    ) -> None:
+        """xarray PNP values should match NumPy PNP values within 1e-8."""
+        np.testing.assert_allclose(
+            pnp_xarray_result.values,
+            pnp_numpy_result,
+            atol=1e-8,
+            equal_nan=True,
+            err_msg="PNP xarray vs NumPy equivalence failed",
+        )
+
+    def test_output_shape_matches_input(
+        self,
+        sample_monthly_precip_da: xr.DataArray,
+        pnp_xarray_result: xr.DataArray,
+    ) -> None:
+        """Output shape should match input shape."""
+        assert pnp_xarray_result.shape == sample_monthly_precip_da.shape
+
+    def test_output_is_dataarray(self, pnp_xarray_result: xr.DataArray) -> None:
+        """xarray input should produce xarray output."""
+        assert isinstance(pnp_xarray_result, xr.DataArray)
+
+
+class TestPNPXarrayCFMetadata:
+    """Validate CF Convention metadata on PNP xarray output."""
+
+    def test_has_long_name(self, pnp_xarray_result: xr.DataArray) -> None:
+        assert "long_name" in pnp_xarray_result.attrs
+        assert pnp_xarray_result.attrs["long_name"] == "Percent of Normal Precipitation (ratio; 1 = 100%)"
+
+    def test_has_units(self, pnp_xarray_result: xr.DataArray) -> None:
+        assert "units" in pnp_xarray_result.attrs
+        assert pnp_xarray_result.attrs["units"] == "1"
+
+    def test_has_references(self, pnp_xarray_result: xr.DataArray) -> None:
+        assert "references" in pnp_xarray_result.attrs
+        assert "Willeke" in pnp_xarray_result.attrs["references"]
+
+    def test_has_version(self, pnp_xarray_result: xr.DataArray) -> None:
+        assert "climate_indices_version" in pnp_xarray_result.attrs
+
+    def test_has_history(self, pnp_xarray_result: xr.DataArray) -> None:
+        assert "history" in pnp_xarray_result.attrs
+        assert "PNP" in pnp_xarray_result.attrs["history"]
+
+    def test_has_scale_in_attrs(self, pnp_xarray_result: xr.DataArray) -> None:
+        assert "scale" in pnp_xarray_result.attrs
+        assert pnp_xarray_result.attrs["scale"] == 6
+
+
+@pytest.mark.parametrize("gridded", [False, True])
+@pytest.mark.parametrize("dask_backed", [False, True])
+@pytest.mark.parametrize("last_precip, expected_ratio", [(0.0, 0.0), (5.0, 0.5), (10.0, 1.0), (20.0, 2.0)])
+def test_pnp_ratio_values_and_units(
+    last_precip: float, expected_ratio: float, dask_backed: bool, gridded: bool
+) -> None:
+    """Normal precipitation is 1.0, not 100, on both public API paths."""
+    values = np.full(30 * 12, 10.0)
+    values[-1] = last_precip
+    expected = np.ones(values.size)
+    expected[-1] = expected_ratio
+    result = numpy_pnp(values, 1, 1991, 1991, 2019, Periodicity.monthly)
+    np.testing.assert_array_equal(result, expected)
+
+    precip = xr.DataArray(
+        values,
+        dims="time",
+        coords={"time": xr.date_range("1991-01-01", periods=values.size, freq="MS")},
+        attrs={
+            "units": "mm",
+            "valid_min": 5.0,
+            "valid_max": 20.0,
+            "valid_range": [5.0, 20.0],
+            "actual_range": [0.0, 20.0],
+        },
+    )
+    if gridded:
+        precip = precip.expand_dims(lat=[40.0, 41.0], lon=[-105.0, -104.0])
+    if dask_backed:
+        precip = precip.chunk({"time": -1})
+    input_attrs = precip.attrs.copy()
+    output = percentage_of_normal(precip, scale=1, calibration_year_initial=1991, calibration_year_final=2019)
+    np.testing.assert_array_equal(output.values, np.broadcast_to(expected, precip.shape))
+    assert output.attrs["units"] == "1"
+    assert "ratio; 1 = 100%" in output.attrs["long_name"]
+    assert output.attrs["valid_min"] == 0.0
+    for attr in ("valid_max", "valid_range", "actual_range"):
+        assert attr not in output.attrs
+    assert precip.attrs == input_attrs
+
+
+def test_pnp_calibration_attrs_preserve_legacy_names(sample_monthly_precip_da: xr.DataArray) -> None:
+    """PNP xarray output keeps the pre-rename attrs for inferred and explicit years."""
+    inferred = percentage_of_normal(values=sample_monthly_precip_da, scale=6)
+    explicit = percentage_of_normal(
+        values=sample_monthly_precip_da,
+        scale=6,
+        calibration_year_initial=1981,
+        calibration_year_final=2018,
+    )
+    with pytest.warns(ClimateIndicesDeprecationWarning):
+        legacy = percentage_of_normal(
+            values=sample_monthly_precip_da,
+            scale=6,
+            calibration_start_year=1981,
+            calibration_end_year=2018,
+        )
+
+    for result, start, end in ((inferred, 1980, 2019), (explicit, 1981, 2018), (legacy, 1981, 2018)):
+        assert result.attrs["calibration_start_year"] == result.attrs["calibration_year_initial"] == start
+        assert result.attrs["calibration_end_year"] == result.attrs["calibration_year_final"] == end
+        assert "PNP-6 calculated" in result.attrs["history"]
+        assert "calibration_" not in result.attrs["history"]
+    np.testing.assert_array_equal(explicit.values, legacy.values)
+
+
+class TestPNPCoordinatePreservation:
+    """Validate coordinate preservation through PNP xarray computation."""
+
+    def test_time_coords_match_input(
+        self,
+        sample_monthly_precip_da: xr.DataArray,
+        pnp_xarray_result: xr.DataArray,
+    ) -> None:
+        """Time coordinates should exactly match input."""
+        xr.testing.assert_equal(
+            pnp_xarray_result.coords["time"],
+            sample_monthly_precip_da.coords["time"],
+        )
+
+    def test_dims_match_input(
+        self,
+        sample_monthly_precip_da: xr.DataArray,
+        pnp_xarray_result: xr.DataArray,
+    ) -> None:
+        """Dimension names and order should be preserved."""
+        assert pnp_xarray_result.dims == sample_monthly_precip_da.dims
+
+    def test_coord_keys_exact(
+        self,
+        sample_monthly_precip_da: xr.DataArray,
+        pnp_xarray_result: xr.DataArray,
+    ) -> None:
+        """No extra or missing coordinate keys."""
+        assert set(pnp_xarray_result.coords.keys()) == set(sample_monthly_precip_da.coords.keys())
+
+
+class TestPNPNumpyPassthrough:
+    """Validate NumPy path is unchanged when called through typed API."""
+
+    def test_numpy_returns_ndarray(self) -> None:
+        """NumPy input should return ndarray, not DataArray."""
+        rng = np.random.default_rng(123)
+        values = rng.gamma(shape=2.0, scale=50.0, size=480)
+        result = percentage_of_normal(
+            values=values,
+            scale=6,
+            data_start_year=1980,
+            calibration_year_initial=1980,
+            calibration_year_final=2019,
+            periodicity=Periodicity.monthly,
+        )
+        assert isinstance(result, np.ndarray)
+        assert result.shape == values.shape
+
+
+def test_pnp_legacy_calibration_keywords_warn_and_match() -> None:
+    """The deprecated start/end keywords warn but return canonical-equal values."""
+    rng = np.random.default_rng(7)
+    values = rng.gamma(shape=2.0, scale=50.0, size=480)
+    canonical = numpy_pnp(
+        values=values,
+        scale=6,
+        data_start_year=1980,
+        calibration_year_initial=1980,
+        calibration_year_final=2019,
+        periodicity=Periodicity.monthly,
+    )
+    with pytest.warns(ClimateIndicesDeprecationWarning, match=r"deprecated since version 3\.0\.0"):
+        legacy = numpy_pnp(
+            values=values,
+            scale=6,
+            data_start_year=1980,
+            calibration_start_year=1980,
+            calibration_end_year=2019,
+            periodicity=Periodicity.monthly,
+        )
+    np.testing.assert_array_equal(canonical, legacy)
+
+
+def test_typed_pnp_legacy_keywords_warn_exactly_once() -> None:
+    """The shared alias translation warns once, not once per delegation layer."""
+    rng = np.random.default_rng(9)
+    values = rng.gamma(shape=2.0, scale=50.0, size=480)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        percentage_of_normal(
+            values,
+            scale=6,
+            data_start_year=1980,
+            calibration_start_year=1980,
+            calibration_end_year=2019,
+            periodicity=Periodicity.monthly,
+        )
+    deprecations = [warning for warning in caught if issubclass(warning.category, ClimateIndicesDeprecationWarning)]
+    assert len(deprecations) == 1
+
+
+def test_pnp_canonical_calibration_keywords_do_not_warn() -> None:
+    """The canonical keywords emit no deprecation warning."""
+    rng = np.random.default_rng(8)
+    values = rng.gamma(shape=2.0, scale=50.0, size=480)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        numpy_pnp(
+            values=values,
+            scale=6,
+            data_start_year=1980,
+            calibration_year_initial=1980,
+            calibration_year_final=2019,
+            periodicity=Periodicity.monthly,
+        )
+    assert not [w for w in caught if issubclass(w.category, ClimateIndicesDeprecationWarning)]

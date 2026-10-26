@@ -1,0 +1,1623 @@
+import logging
+import warnings
+from unittest import mock
+
+import numpy as np
+import pytest
+import scipy.special
+import scipy.stats
+
+from climate_indices import compute, indices
+from climate_indices.exceptions import GoodnessOfFitWarning, PeriodicityError
+
+# disable logging messages
+logging.disable(logging.CRITICAL)
+
+UNEXPECTED_PEARSON3_MESSAGE = "Transformed Pearson Type III fitted values not computed as expected"
+UNEXPECTED_SLIDING_SUMS_MESSAGE = "Sliding sums not computed as expected"
+
+
+@pytest.mark.usefixtures(
+    "precips_mm_monthly",
+    "precips_mm_daily",
+    "data_year_start_monthly",
+    "data_year_end_monthly",
+    "data_year_start_daily",
+    "calibration_year_start_monthly",
+    "calibration_year_end_monthly",
+    "calibration_year_start_daily",
+    "calibration_year_end_daily",
+    "transformed_gamma_monthly",
+    "transformed_gamma_daily",
+)
+def test_transform_fitted_gamma(
+    precips_mm_monthly,
+    precips_mm_daily,
+    data_year_start_monthly,
+    data_year_end_monthly,
+    data_year_start_daily,
+    calibration_year_start_monthly,
+    calibration_year_end_monthly,
+    calibration_year_start_daily,
+    calibration_year_end_daily,
+    transformed_gamma_monthly,
+    transformed_gamma_daily,
+):
+    """
+    Test for the compute.transform_fitted_gamma() function
+    """
+
+    # confirm that an input array of all NaNs results in the same array returned
+    all_nans = np.full(precips_mm_monthly.shape, np.nan)
+    computed_values = compute.transform_fitted_gamma(
+        all_nans,
+        data_year_start_monthly,
+        data_year_start_monthly,
+        data_year_end_monthly,
+        compute.Periodicity.monthly,
+    )
+    np.testing.assert_allclose(
+        computed_values,
+        all_nans,
+        equal_nan=True,
+        err_msg="Gamma fit/transform not handling all-NaN arrays as expected",
+    )
+
+    # compute sigmas of transformed (normalized) values fitted to a gamma
+    # distribution, using the full period of record as the calibration period
+    computed_values = compute.transform_fitted_gamma(
+        precips_mm_monthly,
+        data_year_start_monthly,
+        data_year_start_monthly,
+        data_year_end_monthly,
+        compute.Periodicity.monthly,
+    )
+    np.testing.assert_allclose(
+        computed_values,
+        transformed_gamma_monthly,
+        err_msg="Transformed gamma fitted monthly values not computed as expected",
+    )
+
+    # compute sigmas of transformed (normalized) values fitted to a gamma
+    # distribution, using a calibration period one year shorter than the record
+    computed_values = compute.transform_fitted_gamma(
+        precips_mm_daily.flatten(),
+        data_year_start_daily,
+        calibration_year_start_daily,
+        calibration_year_end_daily,
+        compute.Periodicity.daily,
+    )
+
+    # the daily fixture predates ADR-0015, when the probability of zero was the zero
+    # count over every year of the record, missing years included; supplying that
+    # probability reproduces it, so the calibration-window probability is the only change
+    whole_record_probabilities_of_zero = np.count_nonzero(precips_mm_daily == 0, axis=0) / precips_mm_daily.shape[0]
+    whole_record_values = compute.transform_fitted_gamma(
+        precips_mm_daily.flatten(),
+        data_year_start_daily,
+        calibration_year_start_daily,
+        calibration_year_end_daily,
+        compute.Periodicity.daily,
+        probabilities_of_zero=whole_record_probabilities_of_zero,
+    )
+    mask_valid_fixture = ~np.isnan(transformed_gamma_daily)
+    np.testing.assert_allclose(
+        whole_record_values[mask_valid_fixture],
+        transformed_gamma_daily[mask_valid_fixture],
+        atol=0.001,
+        err_msg="Transformed gamma fitted daily values mismatch on valid fixture values",
+    )
+
+    # by default the probability of zero comes from the calibration period's
+    # non-missing values, which moves the fixture's values
+    calibration_values = precips_mm_daily[: calibration_year_end_daily - data_year_start_daily + 1]
+    calibration_probabilities_of_zero = np.count_nonzero(calibration_values == 0, axis=0) / np.count_nonzero(
+        ~np.isnan(calibration_values), axis=0
+    )
+    np.testing.assert_array_equal(
+        computed_values,
+        compute.transform_fitted_gamma(
+            precips_mm_daily.flatten(),
+            data_year_start_daily,
+            calibration_year_start_daily,
+            calibration_year_end_daily,
+            compute.Periodicity.daily,
+            probabilities_of_zero=calibration_probabilities_of_zero,
+        ),
+    )
+    assert not np.allclose(computed_values[mask_valid_fixture], transformed_gamma_daily[mask_valid_fixture], atol=0.001)
+
+    # Check that values where input was zero are NOT NaN in computed result
+    # and are finite (either a real number or -inf for extreme drought)
+    # Note: Zero precipitation can result in positive SPI when zeros are historically
+    # common for that time step (high probability of zero means zero is "normal")
+    mask_zeros = precips_mm_daily == 0
+    spi_for_zeros = computed_values[mask_zeros]
+    assert not np.any(np.isnan(spi_for_zeros)), "Computed SPI should not be NaN for zero precipitation"
+    # SPI values should be real numbers or -inf (not +inf or NaN)
+    assert np.all(spi_for_zeros < np.inf), "SPI for zero precipitation should not be +infinity"
+
+    # confirm that we can call with a calibration period out of the valid range
+    # and as a result use the full period of record as the calibration period instead
+    computed_values = compute.transform_fitted_gamma(
+        precips_mm_monthly,
+        data_year_start_monthly,
+        1500,
+        2500,
+        compute.Periodicity.monthly,
+    )
+    np.testing.assert_allclose(
+        computed_values,
+        transformed_gamma_monthly,
+        atol=0.001,
+        equal_nan=True,
+        err_msg=UNEXPECTED_PEARSON3_MESSAGE,
+    )
+
+    # if we provide a 1-D array then we need to provide a corresponding
+    # time series type, confirm we can't use an invalid type
+    flat_array = precips_mm_monthly.flatten()
+    np.testing.assert_raises(
+        PeriodicityError,
+        compute.transform_fitted_gamma,
+        flat_array,
+        data_year_start_monthly,
+        calibration_year_start_monthly,
+        calibration_year_end_monthly,
+        "invalid_value",
+    )
+    np.testing.assert_raises(
+        PeriodicityError,
+        compute.transform_fitted_gamma,
+        flat_array,
+        data_year_start_monthly,
+        calibration_year_start_monthly,
+        calibration_year_end_monthly,
+        None,
+    )
+
+    # confirm that an input array which is not 1-D or 2-D will raise an error
+    with pytest.raises(ValueError):
+        compute.transform_fitted_gamma(
+            np.zeros((9, 8, 7, 6), dtype=float),
+            data_year_start_daily,
+            calibration_year_start_daily,
+            calibration_year_end_daily,
+            compute.Periodicity.monthly,
+        )
+
+
+def test_transform_fitted_gamma_all_zeros_produces_finite_spi():
+    """
+    Test that all-zero precipitation produces finite SPI values, not NaN.
+
+    When all precipitation values are zero, SPI should indicate extreme drought
+    (negative infinity or large negative values), not NaN.
+    """
+    # one year of daily data (366 days)
+    n_years = 1
+    n_days_per_year = 366
+    values = np.zeros((n_years, n_days_per_year), dtype=float)
+
+    result = compute.transform_fitted_gamma(
+        values,
+        data_start_year=2000,
+        calibration_start_year=2000,
+        calibration_end_year=2000,
+        periodicity=compute.Periodicity.daily,
+    )
+
+    # all-zero input should not produce NaN
+    assert not np.any(np.isnan(result)), "SPI should not be NaN when all inputs are zero"
+
+    # all-zero input should indicate extreme drought (negative values)
+    assert np.all(result < 0), "SPI for all-zero precipitation should be negative (extreme drought)"
+
+
+@pytest.mark.usefixtures(
+    "precips_mm_monthly",
+    "precips_mm_daily",
+    "data_year_start_monthly",
+    "data_year_end_monthly",
+    "data_year_start_daily",
+    "calibration_year_start_monthly",
+    "calibration_year_end_monthly",
+    "calibration_year_start_daily",
+    "calibration_year_end_daily",
+    "gamma_monthly",
+    "gamma_daily",
+)
+def test_gamma_parameters(
+    precips_mm_monthly,
+    precips_mm_daily,
+    data_year_start_monthly,
+    data_year_end_monthly,
+    data_year_start_daily,
+    calibration_year_start_monthly,
+    calibration_year_end_monthly,
+    calibration_year_start_daily,
+    calibration_year_end_daily,
+    gamma_monthly,
+    gamma_daily,
+):
+    """
+    Test for the compute.gamma_parameters() function
+    """
+
+    # confirm that an input array of all NaNs results in the same array returned
+    all_nans = np.full(precips_mm_monthly.shape, np.nan)
+    nan_alphas = np.full(shape=(12,), fill_value=np.nan)
+    nan_betas = np.full(shape=(12,), fill_value=np.nan)
+    alphas, betas = compute.gamma_parameters(
+        all_nans,
+        data_year_start_monthly,
+        data_year_start_monthly,
+        data_year_end_monthly,
+        compute.Periodicity.monthly,
+    )
+    assert np.allclose(alphas, nan_alphas, equal_nan=True)
+    assert np.allclose(betas, nan_betas, equal_nan=True)
+
+    computed_values = compute.gamma_parameters(
+        precips_mm_monthly,
+        data_year_start_monthly,
+        calibration_year_start_monthly,
+        calibration_year_end_monthly,
+        compute.Periodicity.monthly,
+    )
+
+    np.testing.assert_allclose(
+        computed_values,
+        gamma_monthly,
+        equal_nan=True,
+        err_msg="Monthly gamma fitting parameters not being computed as expected",
+    )
+
+    computed_values = compute.gamma_parameters(
+        precips_mm_daily,
+        data_year_start_daily,
+        calibration_year_start_daily,
+        calibration_year_end_daily,
+        compute.Periodicity.daily,
+    )
+
+    np.testing.assert_allclose(
+        computed_values,
+        gamma_daily,
+        equal_nan=True,
+        err_msg="Daily gamma fitting parameters not being computed as expected",
+    )
+
+
+@pytest.mark.usefixtures(
+    "precips_mm_monthly",
+    "precips_mm_daily",
+    "data_year_start_monthly",
+    "data_year_end_monthly",
+    "data_year_start_daily",
+    "calibration_year_start_monthly",
+    "calibration_year_end_monthly",
+    "calibration_year_start_daily",
+    "calibration_year_end_daily",
+    "transformed_pearson3",
+    "transformed_pearson3_monthly_fullperiod",
+)
+def test_transform_fitted_pearson(
+    precips_mm_monthly,
+    precips_mm_daily,
+    data_year_start_monthly,
+    data_year_end_monthly,
+    data_year_start_daily,
+    calibration_year_start_monthly,
+    calibration_year_end_monthly,
+    calibration_year_start_daily,
+    calibration_year_end_daily,
+    transformed_pearson3,
+    transformed_pearson3_monthly_fullperiod,
+):
+    """
+    Test for the compute.transform_fitted_pearson() function
+    """
+
+    # confirm that an input array of all NaNs results in the same array returned
+    all_nans = np.full(precips_mm_monthly.shape, np.nan)
+    computed_values = compute.transform_fitted_pearson(
+        all_nans,
+        data_year_start_monthly,
+        data_year_start_monthly,
+        data_year_end_monthly,
+        compute.Periodicity.monthly,
+    )
+    np.testing.assert_allclose(
+        computed_values,
+        all_nans,
+        equal_nan=True,
+        err_msg="Pearson fit/transform not handling all-NaN arrays as expected",
+    )
+
+    # compute sigmas of transformed (normalized) values
+    # fitted to a Pearson Type III distribution
+    computed_values = compute.transform_fitted_pearson(
+        precips_mm_monthly,
+        data_year_start_monthly,
+        calibration_year_start_monthly,
+        calibration_year_end_monthly,
+        compute.Periodicity.monthly,
+    )
+    expected_values = transformed_pearson3
+    np.testing.assert_allclose(
+        computed_values,
+        expected_values,
+        atol=0.001,
+        err_msg=UNEXPECTED_PEARSON3_MESSAGE,
+    )
+
+    # confirm that an input array of all NaNs will return the same array
+    all_nans = np.full(precips_mm_monthly.shape, np.nan)
+    computed_values = compute.transform_fitted_pearson(
+        all_nans,
+        data_year_start_monthly,
+        calibration_year_start_monthly,
+        calibration_year_end_monthly,
+        compute.Periodicity.monthly,
+    )
+    np.testing.assert_allclose(
+        computed_values,
+        all_nans,
+        equal_nan=True,
+        err_msg=UNEXPECTED_PEARSON3_MESSAGE,
+    )
+
+    # confirm that we can call with a calibration period outside of valid range
+    # and as a result use the full period of record as the calibration period instead
+    computed_values = compute.transform_fitted_pearson(
+        precips_mm_monthly,
+        data_year_start_monthly,
+        1500,
+        2500,
+        compute.Periodicity.monthly,
+    )
+    np.testing.assert_allclose(
+        computed_values.flatten(),
+        transformed_pearson3_monthly_fullperiod,
+        atol=0.001,
+        equal_nan=True,
+        err_msg=UNEXPECTED_PEARSON3_MESSAGE,
+    )
+
+    # confirm that we can call with daily values and not raise an error
+    compute.transform_fitted_pearson(
+        precips_mm_daily,
+        data_year_start_daily,
+        calibration_year_start_daily,
+        calibration_year_end_daily,
+        compute.Periodicity.daily,
+    )
+
+    # confirm that we get expected errors when
+    # using invalid time series type arguments
+    flattened_precips = precips_mm_monthly.flatten()
+    with pytest.raises(PeriodicityError, match="requires a corresponding periodicity") as missing_periodicity:
+        compute.transform_fitted_pearson(
+            flattened_precips,
+            data_year_start_monthly,
+            calibration_year_start_monthly,
+            calibration_year_end_monthly,
+            None,
+        )
+    assert missing_periodicity.value.periodicity_value == "None"
+
+    with pytest.raises(PeriodicityError, match="Unsupported periodicity argument") as unsupported_periodicity:
+        compute.transform_fitted_pearson(
+            flattened_precips,
+            data_year_start_monthly,
+            calibration_year_start_monthly,
+            calibration_year_end_monthly,
+            "unsupported_type",
+        )
+    assert unsupported_periodicity.value.periodicity_value == "unsupported_type"
+
+    # confirm that an input array which is not 1-D or 2-D will raise an error
+    with pytest.raises(ValueError):
+        compute.transform_fitted_pearson(
+            np.zeros((9, 8, 7, 6), dtype=float),
+            data_year_start_daily,
+            calibration_year_start_daily,
+            calibration_year_end_daily,
+            compute.Periodicity.monthly,
+        )
+
+
+def test_transform_fitted_pearson_rejects_mis_shaped_parameters_for_all_missing_values():
+    """An all-missing input must not skip the parameter shape check (#1233)."""
+    all_nans = np.full((40, 12), np.nan)
+
+    with pytest.raises(ValueError, match="must carry the period length"):
+        compute.transform_fitted_pearson(
+            all_nans,
+            1981,
+            1981,
+            2010,
+            compute.Periodicity.monthly,
+            np.zeros(11),
+            np.ones(11),
+            np.ones(11),
+            np.ones(11),
+        )
+
+    # a valid 1-D all-missing input is returned with its original shape
+    all_nans_1d = np.full(40 * 12, np.nan)
+    transformed = compute.transform_fitted_pearson(
+        all_nans_1d,
+        1981,
+        1981,
+        2010,
+        compute.Periodicity.monthly,
+        np.zeros(12),
+        np.ones(12),
+        np.ones(12),
+        np.ones(12),
+    )
+    assert transformed.shape == all_nans_1d.shape
+
+
+def test_transform_fitted_pearson_rejects_scalar_parameters_for_all_missing_values():
+    """Zero-dimensional Pearson parameters must be rejected, not silently accepted."""
+    all_nans = np.full((40, 12), np.nan)
+
+    with pytest.raises(ValueError, match="must carry the period length"):
+        compute.transform_fitted_pearson(
+            all_nans,
+            1981,
+            1981,
+            2010,
+            compute.Periodicity.monthly,
+            np.asarray(0.1),
+            np.asarray(1.0),
+            np.asarray(1.0),
+            np.asarray(1.0),
+        )
+
+
+@pytest.mark.usefixtures(
+    "precips_mm_monthly",
+    "data_year_start_monthly",
+    "calibration_year_start_monthly",
+    "calibration_year_end_monthly",
+)
+def test_pearson_parameters(
+    precips_mm_monthly,
+    data_year_start_monthly,
+    calibration_year_start_monthly,
+    calibration_year_end_monthly,
+):
+    """
+    Test for the compute.pearson_parameters() function
+    """
+    np.testing.assert_raises(
+        ValueError,
+        compute.pearson_parameters,
+        np.array(
+            [[1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 5.0], [1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 4.7]],
+        ),
+        data_year_start_monthly,
+        calibration_year_start_monthly,
+        calibration_year_end_monthly,
+        compute.Periodicity.monthly,
+    )
+    np.testing.assert_raises(
+        PeriodicityError,
+        compute.pearson_parameters,
+        None,
+        data_year_start_monthly,
+        calibration_year_start_monthly,
+        calibration_year_end_monthly,
+        None,
+    )
+
+    # try using a subset of the precipitation dataset (1897 - 1915, year indices 2 - 20)
+    computed_values = compute.pearson_parameters(
+        precips_mm_monthly[2:21, :],
+        data_year_start_monthly,
+        calibration_year_start_monthly,
+        calibration_year_end_monthly,
+        compute.Periodicity.monthly,
+    )
+    expected_probs_of_zero = np.zeros((12,))
+    expected_locs = np.array(
+        [
+            48.539987664499996,
+            53.9852487665,
+            44.284745065842102,
+            62.583727384894736,
+            125.72157689160528,
+            182.03053042784214,
+            159.00575657926319,
+            170.92269736865791,
+            189.8925781252895,
+            155.13420024692104,
+            72.953125000026319,
+            43.31532689144737,
+        ]
+    )
+    expected_scales = np.array(
+        [
+            33.781507724523095,
+            43.572151699968387,
+            40.368173442404107,
+            44.05329691434887,
+            60.10621716019174,
+            59.343178125457186,
+            49.228795303727473,
+            66.775653341386999,
+            65.362977393206421,
+            94.467597091088265,
+            72.63706898364299,
+            34.250906049301463,
+        ]
+    )
+    expected_skews = np.array(
+        [
+            0.76530966976335302,
+            1.2461447518219784,
+            2.275517179222323,
+            0.8069305098698194,
+            -0.6783037020197018,
+            1.022194696224529,
+            0.40876120732817578,
+            1.2372551346168916,
+            0.73881116931924118,
+            0.91911763257003465,
+            2.3846715887263725,
+            1.4700559294571962,
+        ]
+    )
+    np.testing.assert_allclose(
+        computed_values,
+        (expected_probs_of_zero, expected_locs, expected_scales, expected_skews),
+        atol=0.001,
+        equal_nan=True,
+        err_msg="Failed to accurately compute Pearson Type III fitting values",
+    )
+
+    # add some zeros in order to exercise the parts where it gets a percentage of zeros
+    precips_mm = np.array(precips_mm_monthly, copy=True)
+    precips_mm[0, 1] = 0.0
+    precips_mm[3, 4] = 0.0
+    precips_mm[14, 9] = 0.0
+    precips_mm[2, 5] = 0.0
+    precips_mm[8, 3] = 0.0
+    precips_mm[7, 11] = 0.0
+    precips_mm[3, 9] = 0.0
+    precips_mm[11, 4] = 0.0
+    precips_mm[13, 5] = 0.0
+    computed_values = compute.pearson_parameters(
+        precips_mm,
+        data_year_start_monthly,
+        calibration_year_start_monthly,
+        calibration_year_end_monthly,
+        compute.Periodicity.monthly,
+    )
+    expected_probs_of_zero = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    expected_locs = np.array(
+        [
+            45.07,
+            51.86,
+            62.71,
+            57.52,
+            101.46,
+            195.25,
+            145.89,
+            188.22,
+            203.33,
+            125.49,
+            65.22,
+            41.81,
+        ]
+    )
+    expected_scales = np.array(
+        [
+            45.67,
+            49.47,
+            35.25,
+            38.97,
+            59.21,
+            117.08,
+            56.17,
+            68.33,
+            72.65,
+            85.53,
+            53.99,
+            35.14,
+        ]
+    )
+    expected_skews = np.array([2.28, 1.98, 0.74, 0.87, 0.21, 0.97, 1.2, 1.29, 1.06, 1.58, 1.86, 1.85])
+    np.testing.assert_allclose(
+        computed_values,
+        (expected_probs_of_zero, expected_locs, expected_scales, expected_skews),
+        atol=0.01,
+        equal_nan=True,
+        err_msg="Failed to accurately compute Pearson Type III fitting values",
+    )
+
+
+def test_sum_to_scale():
+    """
+    Test for the compute.sum_to_scale() function
+    """
+
+    # test an input array with no missing values
+    values = np.array([3.0, 4, 6, 2, 1, 3, 5, 8, 5])
+    computed_values = compute.sum_to_scale(values, 3)
+    expected_values = np.array([np.nan, np.nan, 13, 12, 9, 6, 9, 16, 18])
+    np.testing.assert_allclose(
+        computed_values,
+        expected_values,
+        err_msg=UNEXPECTED_SLIDING_SUMS_MESSAGE,
+    )
+    computed_values = compute.sum_to_scale(values, 4)
+    expected_values = np.array([np.nan, np.nan, np.nan, 15, 13, 12, 11, 17, 21])
+    np.testing.assert_allclose(
+        computed_values,
+        expected_values,
+        err_msg=UNEXPECTED_SLIDING_SUMS_MESSAGE,
+    )
+
+    # test an input array with missing values on the end
+    values = np.array([3, 4, 6, 2, 1, 3, 5, 8, 5, np.nan, np.nan, np.nan])
+    computed_values = compute.sum_to_scale(values, 3)
+    expected_values = np.array([np.nan, np.nan, 13, 12, 9, 6, 9, 16, 18, np.nan, np.nan, np.nan])
+    np.testing.assert_allclose(
+        computed_values,
+        expected_values,
+        err_msg="Sliding sums not computed as expected when missing values appended to end of input array",
+    )
+
+    # test an input array with missing values within the array
+    values = np.array([3, 4, 6, 2, 1, 3, 5, np.nan, 8, 5, 6])
+    computed_values = compute.sum_to_scale(values, 3)
+    expected_values = np.array([np.nan, np.nan, 13, 12, 9, 6, 9, np.nan, np.nan, np.nan, 19])
+    np.testing.assert_allclose(
+        computed_values,
+        expected_values,
+        err_msg="Sliding sums not computed as expected when missing values appended to end of input array",
+    )
+
+    test_values = np.array([1.0, 5, 7, 2, 3, 4, 9, 6, 3, 8])
+    sum_by2 = np.array([np.nan, 6, 12, 9, 5, 7, 13, 15, 9, 11])
+    sum_by4 = np.array([np.nan, np.nan, np.nan, 15, 17, 16, 18, 22, 22, 26])
+    sum_by6 = np.array([np.nan, np.nan, np.nan, np.nan, np.nan, 22, 30, 31, 27, 33])
+    np.testing.assert_equal(
+        compute.sum_to_scale(test_values, 2),
+        sum_by2,
+        err_msg=UNEXPECTED_SLIDING_SUMS_MESSAGE,
+    )
+    np.testing.assert_equal(
+        compute.sum_to_scale(test_values, 4),
+        sum_by4,
+        err_msg=UNEXPECTED_SLIDING_SUMS_MESSAGE,
+    )
+    np.testing.assert_equal(
+        compute.sum_to_scale(test_values, 6),
+        sum_by6,
+        err_msg=UNEXPECTED_SLIDING_SUMS_MESSAGE,
+    )
+
+
+def test_periodicity_period_length():
+    """
+    Each periodicity reports the number of time steps in one year of data.
+    """
+    assert compute.Periodicity.monthly.period_length == 12
+    assert compute.Periodicity.daily.period_length == 366
+
+
+def test_prepare_scaled_flattens_clips_and_reshapes():
+    """
+    2-D input is flattened before summing, negatives are clipped, and the result is reshaped.
+    """
+    values = np.arange(24, dtype=float).reshape(2, 12)
+    values[0, 0] = -5.0
+
+    computed = compute.prepare_scaled(values, 3, compute.Periodicity.monthly)
+
+    assert computed.shape == (2, 12)
+    # the sum crosses the year boundary, i.e. the input was flattened before scaling
+    assert computed[1, 0] == 10.0 + 11.0 + 12.0
+    # the negative value was clipped to zero rather than summed
+    assert computed[0, 2] == 0.0 + 1.0 + 2.0
+    np.testing.assert_array_equal(
+        computed,
+        compute.prepare_scaled(values.flatten(), 3, compute.Periodicity.monthly),
+    )
+
+    # clipping is optional, and nothing else about the preparation changes
+    unclipped = compute.prepare_scaled(values, 3, compute.Periodicity.monthly, clip_negatives=False)
+    assert unclipped[0, 2] == -5.0 + 1.0 + 2.0
+
+
+def test_prepare_scaled_sums_over_the_scale():
+    """
+    The scale sums each time step, and the reshape to (years, periods) is optional.
+    """
+    values = np.arange(1.0, 25.0)
+
+    unreshaped = compute.prepare_scaled(values, 3, compute.Periodicity.monthly, reshape=False)
+    np.testing.assert_array_equal(unreshaped, compute.sum_to_scale(values, 3))
+    assert unreshaped.shape == (24,)
+
+    reshaped = compute.prepare_scaled(values, 3, compute.Periodicity.monthly)
+    assert reshaped.shape == (2, 12)
+
+
+def test_prepare_scaled_mean_divides_each_window_by_the_scale():
+    """
+    A mean is the windowed sum over the scale, so the NaN pad and any window holding a
+    missing value stay missing exactly as they do for a sum, and sum remains the default.
+    """
+    values = np.arange(1.0, 25.0)
+    values[5] = np.nan
+
+    summed = compute.prepare_scaled(values, 3, compute.Periodicity.monthly, reshape=False)
+    averaged = compute.prepare_scaled(values, 3, compute.Periodicity.monthly, reshape=False, aggregation="mean")
+
+    np.testing.assert_array_equal(summed, compute.sum_to_scale(values, 3))
+    np.testing.assert_array_equal(averaged, summed / 3)
+    # the pad (two steps) and the three windows that contain the missing value
+    assert np.flatnonzero(np.isnan(averaged)).tolist() == [0, 1, 5, 6, 7]
+
+    # a scale of 1 is the identity under either operation
+    np.testing.assert_array_equal(
+        compute.prepare_scaled(values, 1, compute.Periodicity.monthly, reshape=False, aggregation="mean"),
+        compute.prepare_scaled(values, 1, compute.Periodicity.monthly, reshape=False),
+    )
+
+
+@pytest.mark.parametrize("shape", [(24,), (2, 12), (24, 2, 3)])
+@pytest.mark.parametrize("dtype", [np.int64, np.float32, np.float64])
+def test_prepare_scaled_mean_reuses_the_sum_buffer(shape, dtype):
+    """A mean divides the owned sum buffer, never allocating another full output."""
+    values = np.arange(1, np.prod(shape) + 1, dtype=dtype).reshape(shape)
+    original = values.copy()
+    values.flags.writeable = False
+    summed = compute.sum_to_scale(compute.prepare_input_shape(values, spatial_time_major=True), 3)
+    expected = summed / 3
+
+    with mock.patch.object(compute, "sum_to_scale", return_value=summed):
+        averaged = compute.prepare_scaled(
+            values, 3, compute.Periodicity.monthly, reshape=False, spatial_time_major=True, aggregation="mean"
+        )
+
+    assert averaged is summed
+    np.testing.assert_array_equal(averaged, expected)
+    np.testing.assert_array_equal(values, original)
+
+
+def test_prepare_scaled_mean_keeps_a_bounded_series_in_range():
+    """
+    A capacity factor averaged over a window stays in [0, 1], where its sum does not;
+    the time-major spatial branch and a masked input take the same mean.
+    """
+    capacity_factor = np.full((24, 2, 3), 0.8)
+
+    summed = compute.prepare_scaled(capacity_factor, 4, compute.Periodicity.monthly, spatial_time_major=True)
+    averaged = compute.prepare_scaled(
+        capacity_factor, 4, compute.Periodicity.monthly, spatial_time_major=True, aggregation="mean"
+    )
+
+    assert np.nanmax(summed) == pytest.approx(3.2)
+    assert averaged.shape == summed.shape == (2, 12, 2, 3)
+    assert np.nanmax(averaged) == pytest.approx(0.8)
+    assert np.nanmin(averaged) == pytest.approx(0.8)
+
+    masked = np.ma.array(np.full(24, 0.5), mask=False)
+    masked.mask[10] = True
+    averaged_masked = compute.prepare_scaled(masked, 2, compute.Periodicity.monthly, reshape=False, aggregation="mean")
+    assert np.flatnonzero(np.isnan(averaged_masked)).tolist() == [0, 10, 11]
+    assert np.nanmax(averaged_masked) == pytest.approx(0.5)
+
+
+def test_prepare_scaled_rejects_an_unknown_aggregation():
+    """
+    Only the two ADR-0019 operations are accepted, whatever the periodicity or input.
+    """
+    with pytest.raises(ValueError, match="Invalid aggregation argument"):
+        compute.prepare_scaled(np.arange(24.0), 3, compute.Periodicity.monthly, aggregation="median")  # type: ignore[arg-type]
+
+
+def test_prepare_scaled_fills_masked_values_with_nan():
+    """
+    Masked values are missing values, so they come back as NaN rather than as raw data.
+    """
+    values = np.ma.array(np.arange(24, dtype=float), mask=False)
+    values.mask[3] = True
+
+    # scale == 1 returns the still-masked values, which the seam makes explicit
+    computed = compute.prepare_scaled(values, 1, compute.Periodicity.monthly)
+
+    assert not np.ma.isMaskedArray(computed)
+    assert computed.shape == (2, 12)
+    assert np.isnan(computed[0, 3])
+    assert computed[0, 4] == 4.0
+
+
+def test_prepare_scaled_returns_all_missing_input_unreshaped():
+    """
+    All-missing input is handed back flattened and un-reshaped so that callers can short-circuit.
+    """
+    computed = compute.prepare_scaled(np.full((2, 12), np.nan), 3, compute.Periodicity.monthly)
+    assert computed.ndim == 1
+    assert np.all(np.isnan(computed))
+
+    computed_masked = compute.prepare_scaled(
+        np.ma.array(np.zeros((2, 12)), mask=True),
+        3,
+        compute.Periodicity.monthly,
+    )
+    assert np.ma.isMaskedArray(computed_masked)
+    assert computed_masked.ndim == 1
+    assert computed_masked.mask.all()
+
+
+def test_prepare_scaled_rejects_unsupported_shapes():
+    """
+    Input with no time axis, and ambiguous spatial input, raise a ValueError.
+
+    Three or more dimensions are read as a time-major (time, *cells) block, except when
+    the first cell axis is itself the period length: that shape is equally readable as a
+    (years, periods, *cells) array, so it has to be declared (#923).
+    """
+    with pytest.raises(ValueError, match="Invalid shape of input array"):
+        compute.prepare_scaled(np.array(0.0), 1, compute.Periodicity.monthly)
+
+    with pytest.raises(ValueError, match="ambiguous"):
+        compute.prepare_scaled(np.zeros((24, 12, 2)), 1, compute.Periodicity.monthly)
+
+    # unambiguous spatial input is read as time-major (time, *cells) without a declaration
+    spatial = compute.prepare_scaled(np.zeros((24, 2, 2)), 1, compute.Periodicity.monthly)
+    assert spatial.shape == (2, 12, 2, 2)
+
+    # and the ambiguous shape folds the same way once it is declared
+    declared = compute.prepare_scaled(
+        np.zeros((24, 12, 2)),
+        1,
+        compute.Periodicity.monthly,
+        spatial_time_major=True,
+    )
+    assert declared.shape == (2, 12, 12, 2)
+
+
+def test_prepare_scaled_rejects_unsupported_periodicity_when_unreshaped():
+    """
+    An invalid periodicity must be rejected even with reshape=False, since the
+    reshape step's periodicity check is skipped in that case.
+    """
+    with pytest.raises(PeriodicityError, match="Invalid periodicity argument") as error:
+        compute.prepare_scaled(np.arange(12, dtype=float), 3, "monthly", reshape=False)
+
+    assert error.value.periodicity_value == "monthly"
+
+
+def test_is_all_missing_detects_nan_and_masked():
+    """The single all-missing owner covers NaN arrays, masked arrays, and partial data."""
+    assert compute.is_all_missing(np.full(3, np.nan))
+    assert compute.is_all_missing(np.ma.masked_all(3))
+    assert not compute.is_all_missing(np.array([1.0, np.nan]))
+    assert not compute.is_all_missing(np.array([1.0, 2.0]))
+
+
+def test_prepare_input_shape_flattens_and_rejects_an_ambiguous_block():
+    """The public shape helper keeps the legacy flatten and the ADR-0009 guard."""
+    assert compute.prepare_input_shape(np.zeros((2, 12)), False).shape == (24,)
+    with pytest.raises(ValueError, match="ambiguous"):
+        compute.prepare_input_shape(np.zeros((24, 12, 2)), False)
+    assert compute.prepare_input_shape(np.zeros((24, 12, 2)), True).shape == (24, 12, 2)
+
+
+def test_reshape_and_unfold_time_major_round_trip():
+    """The fold/unfold pair restores the time-major layout and trims calendar padding."""
+    monthly = compute.Periodicity.monthly
+
+    # 30 time steps pad to 36 on fold, then trim back to the original 30 on unfold
+    block = np.arange(30 * 3 * 2, dtype=float).reshape(30, 3, 2)
+    folded = compute.reshape_time_major(block, monthly)
+    assert folded.shape == (3, 12, 3, 2)
+    unfolded = compute.unfold_time_major(folded, block.shape)
+    np.testing.assert_array_equal(unfolded, block)
+
+    # a flattened 1-D series is restored to its original length
+    series = np.arange(30, dtype=float)
+    folded_series = compute.reshape_time_major(series, monthly)
+    assert folded_series.shape == (3, 12)
+    assert compute.unfold_time_major(folded_series, series.shape).shape == (30,)
+
+
+def test_gamma_parameters_all_missing_rejects_invalid_periodicity():
+    """
+    The all-missing early return must not skip periodicity validation, which is
+    the only check standing between the caller and a silently reshape-free result.
+    """
+    with pytest.raises(PeriodicityError, match="Unsupported periodicity") as error:
+        compute.gamma_parameters(np.full((2, 12), np.nan), 2000, 2000, 2001, None)
+
+    assert error.value.periodicity_value == "None"
+
+
+def test_reshape_values_rejects_unsupported_periodicity():
+    """The shared reshape helper rejects a periodicity it cannot reshape to."""
+    with pytest.raises(PeriodicityError, match="Invalid periodicity argument") as error:
+        compute.reshape_values(np.arange(24, dtype=float), "monthly")
+
+    assert error.value.periodicity_value == "monthly"
+
+
+def test_prepare_scaled_clips_negatives_alongside_missing_values():
+    """
+    A negative value must be clipped even when the array also contains unmasked NaN
+    or masked entries, since np.amin/np.nanmin either miss the negative (a NaN in the
+    array makes np.amin return NaN, so `NaN < 0.0` is False) or reach under the mask.
+    """
+    # scale == 1 short-circuits sum_to_scale, so the negative reaches the output
+    # unmodified if it isn't clipped -- this is the path the bug hid on
+    values = np.array([-3.0, np.nan, 2.0])
+    computed = compute.prepare_scaled(values, 1, compute.Periodicity.monthly, reshape=False)
+    assert computed[0] == 0.0
+    assert np.isnan(computed[1])
+
+    # masked entries must not be mistaken for the negative, or reported as clipped
+    masked = np.ma.array([-3.0, 5.0, 2.0], mask=[False, True, False])
+    computed_masked = compute.prepare_scaled(masked, 1, compute.Periodicity.monthly, reshape=False)
+    assert computed_masked[0] == 0.0
+    assert np.isnan(computed_masked[1])
+
+    # the summed path (scale > 1) must also clip before summing, with a NaN elsewhere
+    # in the array (np.amin would return NaN here, hiding the negative under the bug)
+    with_nan = np.array([-3.0, 4.0, np.nan, 2.0])
+    summed = compute.prepare_scaled(with_nan, 2, compute.Periodicity.monthly, reshape=False)
+    assert summed[1] == 0.0 + 4.0
+
+
+def test_fit_and_standardize_dispatches_on_distribution():
+    """
+    Each distribution is fitted and transformed by its own transform, with no
+    parameters to normalize first.
+    """
+    values = np.arange(1.0, 121.0).reshape(10, 12)
+
+    gamma = compute.fit_and_standardize(
+        values, indices.Distribution.gamma, 2000, 2000, 2009, compute.Periodicity.monthly
+    )
+    np.testing.assert_array_equal(
+        gamma,
+        compute.transform_fitted_gamma(values, 2000, 2000, 2009, compute.Periodicity.monthly),
+    )
+
+    pearson = compute.fit_and_standardize(
+        values, indices.Distribution.pearson, 2000, 2000, 2009, compute.Periodicity.monthly
+    )
+    np.testing.assert_array_equal(
+        pearson,
+        compute.transform_fitted_pearson(values, 2000, 2000, 2009, compute.Periodicity.monthly),
+    )
+
+
+def test_fit_and_standardize_normalizes_fitting_parameter_keys():
+    """
+    Fitting parameters are normalized: the canonical spellings and the deprecated
+    aliases that mean the same thing are both used, an explicit None for a canonical
+    key means "fit this parameter from the data", and a canonical key that is None
+    defers to a deprecated alias that carries a value.
+    """
+    values = np.arange(1.0, 121.0).reshape(10, 12)
+    alphas = np.full(12, 4.0)
+    betas = np.full(12, 8.0)
+    with_supplied = compute.transform_fitted_gamma(values, 2000, 2000, 2009, compute.Periodicity.monthly, alphas, betas)
+    from_the_data = compute.transform_fitted_gamma(values, 2000, 2000, 2009, compute.Periodicity.monthly)
+
+    # the supplied parameters are distinguishable from the fitted ones, so a seam that
+    # ignored fitting_params would fail the assertions below
+    assert not np.array_equal(with_supplied, from_the_data)
+
+    parameters = (
+        {"alpha": alphas, "beta": betas},
+        {"alphas": alphas, "betas": betas},
+        {"alpha": None, "alphas": alphas, "beta": None, "betas": betas},
+    )
+    for fitting_params in parameters:
+        computed = compute.fit_and_standardize(
+            values,
+            indices.Distribution.gamma,
+            2000,
+            2000,
+            2009,
+            compute.Periodicity.monthly,
+            fitting_params,
+        )
+        np.testing.assert_array_equal(computed, with_supplied)
+
+    explicit_none = compute.fit_and_standardize(
+        values,
+        indices.Distribution.gamma,
+        2000,
+        2000,
+        2009,
+        compute.Periodicity.monthly,
+        {"alpha": None, "beta": None},
+    )
+    np.testing.assert_array_equal(explicit_none, from_the_data)
+
+    # a key absent from a partial parameter set reads as None rather than raising KeyError:
+    # gamma refits from the data, and Pearson Type III still reports its incomplete set
+    partial_gamma = compute.fit_and_standardize(
+        values,
+        indices.Distribution.gamma,
+        2000,
+        2000,
+        2009,
+        compute.Periodicity.monthly,
+        {"alpha": alphas},
+    )
+    np.testing.assert_array_equal(partial_gamma, from_the_data)
+
+    with pytest.raises(ValueError, match="either none or all"):
+        compute.fit_and_standardize(
+            values,
+            indices.Distribution.pearson,
+            2000,
+            2000,
+            2009,
+            compute.Periodicity.monthly,
+            {"prob_zero": np.full(12, 0.1)},
+        )
+
+
+def test_fit_and_standardize_falls_back_to_gamma_only_when_asked():
+    """
+    A failed Pearson Type III fit falls back to gamma when the caller asked for the
+    fall back, and propagates the failure to the caller when it did not.
+    """
+    values = np.arange(1.0, 121.0).reshape(10, 12)
+    failed_pearson = mock.patch(
+        "climate_indices.compute.transform_fitted_pearson",
+        side_effect=compute.DistributionFittingError("Pearson failed", distribution_name="pearson3"),
+    )
+
+    with failed_pearson:
+        with pytest.raises(compute.DistributionFittingError):
+            compute.fit_and_standardize(
+                values, indices.Distribution.pearson, 2000, 2000, 2009, compute.Periodicity.monthly
+            )
+
+    with failed_pearson:
+        fell_back = compute.fit_and_standardize(
+            values,
+            indices.Distribution.pearson,
+            2000,
+            2000,
+            2009,
+            compute.Periodicity.monthly,
+            fallback_to_gamma=True,
+        )
+
+    # a failed fit leaves the scaled values in place, so the fall back fits gamma to those
+    np.testing.assert_array_equal(
+        fell_back,
+        compute.transform_fitted_gamma(values, 2000, 2000, 2009, compute.Periodicity.monthly),
+    )
+
+
+def test_fit_and_standardize_raises_for_a_partial_pearson_parameter_set_with_the_fall_back_enabled():
+    """A partial Pearson set is an argument error, not a failed fit, even with the fall back (#1215)."""
+    values = np.arange(1.0, 481.0).reshape(40, 12)
+
+    with mock.patch("climate_indices.compute.transform_fitted_gamma") as gamma:
+        with pytest.raises(ValueError, match="either none or all"):
+            compute.fit_and_standardize(
+                values,
+                indices.Distribution.pearson,
+                1981,
+                1981,
+                2010,
+                compute.Periodicity.monthly,
+                {"loc": np.ones(12)},
+                fallback_to_gamma=True,
+            )
+
+    gamma.assert_not_called()
+
+
+def test_fit_and_standardize_raises_for_mis_shaped_pearson_parameters_with_the_fall_back_enabled():
+    """A Pearson parameter that does not carry the period axis is an argument error (#1215)."""
+    values = np.arange(1.0, 481.0).reshape(40, 12)
+    parameters = {
+        "prob_zero": np.zeros(11),
+        "loc": np.ones(11),
+        "scale": np.ones(11),
+        "skew": np.ones(11),
+    }
+
+    with pytest.raises(ValueError, match="must carry the period length"):
+        compute.fit_and_standardize(
+            values,
+            indices.Distribution.pearson,
+            1981,
+            1981,
+            2010,
+            compute.Periodicity.monthly,
+            parameters,
+            fallback_to_gamma=True,
+        )
+
+
+def test_a_goodness_of_fit_warning_error_does_not_change_the_fitted_distribution():
+    """Under ``-W error::GoodnessOfFitWarning`` the warning propagates instead of forcing gamma (#1215)."""
+    values = np.arange(1.0, 481.0).reshape(40, 12)
+
+    with mock.patch(
+        "climate_indices.compute._check_goodness_of_fit_pearson",
+        side_effect=lambda *args, **kwargs: warnings.warn(GoodnessOfFitWarning("poor fit"), stacklevel=2),
+    ):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", GoodnessOfFitWarning)
+            with mock.patch("climate_indices.compute.transform_fitted_gamma") as gamma:
+                with pytest.raises(GoodnessOfFitWarning):
+                    compute.fit_and_standardize(
+                        values,
+                        indices.Distribution.pearson,
+                        1981,
+                        1981,
+                        2010,
+                        compute.Periodicity.monthly,
+                        fallback_to_gamma=True,
+                    )
+
+    gamma.assert_not_called()
+
+
+def test_fit_and_standardize_falls_back_when_pearson_leaves_excessive_nans():
+    """
+    A Pearson Type III result that is mostly missing counts as a fitting failure and
+    falls back to gamma.
+    """
+    values = np.arange(1.0, 121.0).reshape(10, 12)
+
+    with mock.patch("climate_indices.compute.transform_fitted_pearson", return_value=np.full(values.shape, np.nan)):
+        with mock.patch("climate_indices.compute.transform_fitted_gamma", return_value=np.ones(values.shape)) as gamma:
+            computed = compute.fit_and_standardize(
+                values,
+                indices.Distribution.pearson,
+                2000,
+                2000,
+                2009,
+                compute.Periodicity.monthly,
+                fallback_to_gamma=True,
+            )
+
+    assert gamma.call_count == 1
+    np.testing.assert_array_equal(computed, np.ones(values.shape))
+    # the fall back refits the scaled input, not the Pearson result it is replacing
+    np.testing.assert_array_equal(gamma.call_args.args[0], values)
+
+
+def test_fit_and_standardize_does_not_count_missing_input_as_a_failed_pearson_fit():
+    """
+    Values that were already missing in the input do not make the Pearson result count
+    as excessively missing; only values the fit lost do (#1118).
+    """
+    values = np.arange(1.0, 121.0).reshape(10, 12)
+    values[:8] = np.nan
+    pearson_result = np.where(np.isnan(values), np.nan, 0.5)
+
+    with mock.patch("climate_indices.compute.transform_fitted_pearson", return_value=pearson_result):
+        with mock.patch("climate_indices.compute.transform_fitted_gamma") as gamma:
+            computed = compute.fit_and_standardize(
+                values,
+                indices.Distribution.pearson,
+                2000,
+                2000,
+                2009,
+                compute.Periodicity.monthly,
+                fallback_to_gamma=True,
+            )
+
+    gamma.assert_not_called()
+    np.testing.assert_array_equal(computed, pearson_result)
+
+
+@pytest.mark.parametrize("length", [360, 350])
+def test_fit_and_standardize_accepts_1d_input_when_the_fall_back_is_enabled(length):
+    """
+    A 1-D series is reshaped to (years, periods) as the Pearson fit reshapes it, so the
+    fall-back check sees an input of the same shape as the fitted result (#1118).
+    """
+    values = np.random.default_rng(0).gamma(2.0, 30.0, length)
+    args = (indices.Distribution.pearson, 2000, 2000, 2028, compute.Periodicity.monthly)
+
+    computed = compute.fit_and_standardize(values, *args, fallback_to_gamma=True)
+
+    assert computed.shape == (30, 12)
+    np.testing.assert_allclose(computed, compute.fit_and_standardize(values, *args), equal_nan=True)
+
+
+def test_fit_and_standardize_does_not_fall_back_when_the_input_is_entirely_missing():
+    """
+    An input with no valid values has nothing for the Pearson fit to lose, so it is not
+    a failed fit and does not trigger the gamma fall back (#1118).
+    """
+    values = np.full((10, 12), np.nan)
+
+    with mock.patch("climate_indices.compute.transform_fitted_gamma") as gamma:
+        computed = compute.fit_and_standardize(
+            values,
+            indices.Distribution.pearson,
+            2000,
+            2000,
+            2009,
+            compute.Periodicity.monthly,
+            fallback_to_gamma=True,
+        )
+
+    gamma.assert_not_called()
+    assert np.isnan(computed).all()
+
+
+@pytest.mark.parametrize(
+    "distribution",
+    [indices.Distribution.gamma, indices.Distribution.loglogistic, indices.Distribution.pearson],
+)
+def test_fit_and_standardize_returns_all_missing_without_fitting(distribution):
+    """
+    A direct all-missing call returns the input before any fit, so the calibration
+    quality and fit-failure warnings a fit would raise never fire.
+    """
+    values = np.full((30, 12), np.nan)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        computed = compute.fit_and_standardize(values, distribution, 2000, 2000, 2029, compute.Periodicity.monthly)
+
+    assert np.isnan(computed).all()
+
+
+@pytest.mark.parametrize(("lost", "falls_back"), [(60, False), (61, True)])
+def test_fit_and_standardize_falls_back_only_when_pearson_loses_over_half_of_the_valid_values(lost, falls_back):
+    """
+    The trigger weighs the values Pearson lost against the input's valid values, so it
+    still fires for a partly missing input, and only for strictly more than half (#1118).
+    """
+    values = np.arange(1.0, 145.0).reshape(12, 12)
+    values[:2] = np.nan  # 24 values already missing, 120 valid
+    pearson_result = np.where(np.isnan(values), np.nan, 0.5)
+    pearson_result.flat[np.flatnonzero(~np.isnan(values))[:lost]] = np.nan
+
+    with mock.patch("climate_indices.compute.transform_fitted_pearson", return_value=pearson_result):
+        with mock.patch("climate_indices.compute.transform_fitted_gamma", return_value=np.ones(values.shape)) as gamma:
+            computed = compute.fit_and_standardize(
+                values,
+                indices.Distribution.pearson,
+                2000,
+                2000,
+                2011,
+                compute.Periodicity.monthly,
+                fallback_to_gamma=True,
+            )
+
+    if falls_back:
+        assert gamma.call_count == 1
+        np.testing.assert_array_equal(computed, np.ones(values.shape))
+    else:
+        gamma.assert_not_called()
+        np.testing.assert_array_equal(computed, pearson_result)
+
+
+@pytest.mark.parametrize("distribution", [indices.Distribution.gamma, indices.Distribution.pearson])
+def test_fit_diagnostics_parameters_round_trip(distribution):
+    """
+    The parameters reported for a fit are the ones that reproduce it: feeding them
+    back through ``fitting_params`` returns the same standardized values.
+    """
+    values = np.arange(1.0, 481.0).reshape(40, 12)
+
+    diagnostics = compute.fit_diagnostics(values, distribution, 1981, 1981, 2010, compute.Periodicity.monthly)
+    from_the_data = compute.fit_and_standardize(values, distribution, 1981, 1981, 2010, compute.Periodicity.monthly)
+    from_the_parameters = compute.fit_and_standardize(
+        values, distribution, 1981, 1981, 2010, compute.Periodicity.monthly, diagnostics.parameters
+    )
+
+    np.testing.assert_array_equal(from_the_parameters, from_the_data)
+    assert diagnostics.distribution is distribution
+    assert not diagnostics.fell_back_to_gamma
+    expected_keys = (
+        {"alpha", "beta", "prob_zero"}
+        if distribution is indices.Distribution.gamma
+        else {
+            "prob_zero",
+            "loc",
+            "scale",
+            "skew",
+        }
+    )
+    assert set(diagnostics.parameters) == expected_keys
+
+
+def test_fit_diagnostics_reports_valid_counts_and_zero_probability():
+    """The valid count excludes missing and zero calibration values, and the zero mass is reported."""
+    values = np.arange(1.0, 481.0).reshape(40, 12)
+    values[0, :] = 0.0
+    values[1, :] = np.nan
+
+    diagnostics = compute.fit_diagnostics(
+        values, indices.Distribution.gamma, 1981, 1981, 2010, compute.Periodicity.monthly
+    )
+
+    # the 1981-2010 calibration window holds 30 of the 40 years, one of which is
+    # zero and one missing, so the zero mass is one of its 29 non-missing values
+    np.testing.assert_array_equal(diagnostics.n_valid, np.full(12, 28))
+    np.testing.assert_allclose(diagnostics.prob_zero, np.full(12, 1.0 / 29.0))
+    assert np.all((diagnostics.ks_p_value >= 0.0) & (diagnostics.ks_p_value <= 1.0))
+
+
+def test_fit_diagnostics_supports_spatial_blocks():
+    """A folded spatial block gets (time_steps, *cells) diagnostics that also round-trip."""
+    values = np.arange(1.0, (40 * 12 * 6) + 1.0).reshape(40, 12, 2, 3)
+
+    diagnostics = compute.fit_diagnostics(
+        values, indices.Distribution.gamma, 1981, 1981, 2010, compute.Periodicity.monthly
+    )
+    from_the_parameters = compute.fit_and_standardize(
+        values, indices.Distribution.gamma, 1981, 1981, 2010, compute.Periodicity.monthly, diagnostics.parameters
+    )
+
+    assert diagnostics.n_valid.shape == (12, 2, 3)
+    assert diagnostics.parameters["alpha"].shape == (12, 2, 3)
+    np.testing.assert_array_equal(
+        from_the_parameters,
+        compute.fit_and_standardize(values, indices.Distribution.gamma, 1981, 1981, 2010, compute.Periodicity.monthly),
+    )
+
+
+def test_fit_diagnostics_aligns_supplied_period_only_parameters_to_the_period_axis():
+    """A period-only supplied parameter spreads over cells, not over the period axis (#1248)."""
+    values = np.arange(1.0, (40 * 12 * 4) + 1.0).reshape(40, 12, 4)
+    locs = 1.0 + np.arange(12) * 0.1
+    parameters = {
+        "prob_zero": np.full(12, 0.1),
+        "loc": locs,
+        "scale": np.full(12, 1.0),
+        "skew": np.full(12, 1.0),
+    }
+
+    diagnostics = compute.fit_diagnostics(
+        values,
+        indices.Distribution.pearson,
+        1981,
+        1981,
+        2010,
+        compute.Periodicity.monthly,
+        parameters,
+    )
+
+    assert diagnostics.parameters["loc"].shape == (12, 4)
+    for cell in range(4):
+        np.testing.assert_array_equal(diagnostics.parameters["loc"][:, cell], locs)
+
+
+def test_pearson_lost_valid_fraction_matches_the_transform():
+    """The fall-back estimate counts exactly the values the Pearson transform drops (#1248).
+
+    An invalid scale makes the fitted CDF NaN everywhere, but the transform still pins
+    values past the support boundary to finite sentinels, so the estimate must not
+    count those as lost and report a fall back the index never took.
+    """
+    values = np.arange(1.0, 481.0).reshape(40, 12)
+    parameters = {
+        "prob_zero": np.zeros(12),
+        "loc": np.full(12, 100.0),
+        "scale": np.full(12, -1.0),
+        "skew": np.full(12, 1.0),
+    }
+    standardized = compute.transform_fitted_pearson(
+        values,
+        1981,
+        1981,
+        2010,
+        compute.Periodicity.monthly,
+        parameters["prob_zero"],
+        parameters["loc"],
+        parameters["scale"],
+        parameters["skew"],
+    )
+    valid = ~np.isnan(values)
+    actual_lost = np.count_nonzero(valid & np.isnan(standardized)) / np.count_nonzero(valid)
+
+    assert compute._pearson_lost_valid_fraction(values, parameters) == actual_lost
+
+
+def test_fit_diagnostics_reports_the_gamma_fall_back():
+    """A Pearson fit that loses too many valid values is reported as the gamma fit it became (#1216).
+
+    The diagnostics surface decides the fall back from the fit outcome, so it never runs
+    the standardized-value transform to discover the lost values.
+    """
+    values = np.arange(1.0, 481.0).reshape(40, 12)
+
+    with (
+        mock.patch("climate_indices.compute._pearson_lost_valid_fraction", return_value=1.0),
+        mock.patch("climate_indices.compute.transform_fitted_pearson") as pearson_transform,
+    ):
+        diagnostics = compute.fit_diagnostics(
+            values,
+            indices.Distribution.pearson,
+            1981,
+            1981,
+            2010,
+            compute.Periodicity.monthly,
+            fallback_to_gamma=True,
+        )
+
+    pearson_transform.assert_not_called()
+
+    assert diagnostics.fell_back_to_gamma
+    assert diagnostics.distribution is indices.Distribution.gamma
+    assert set(diagnostics.parameters) == {"alpha", "beta", "prob_zero"}
+    expected_alphas, expected_betas = compute.gamma_parameters(values, 1981, 1981, 2010, compute.Periodicity.monthly)
+    np.testing.assert_array_equal(diagnostics.parameters["alpha"], expected_alphas)
+    np.testing.assert_array_equal(diagnostics.parameters["beta"], expected_betas)
+
+
+def test_fit_diagnostics_falls_back_when_pearson_parameter_fitting_raises():
+    values = np.arange(1.0, 481.0).reshape(40, 12)
+    failure = compute.DistributionFittingError("Pearson fit failed", distribution_name="pearson3")
+
+    with mock.patch("climate_indices.compute.pearson_parameters", side_effect=failure):
+        with pytest.raises(compute.DistributionFittingError, match="Pearson fit failed"):
+            compute.fit_diagnostics(values, indices.Distribution.pearson, 1981, 1981, 2010, compute.Periodicity.monthly)
+        diagnostics = compute.fit_diagnostics(
+            values, indices.Distribution.pearson, 1981, 1981, 2010, compute.Periodicity.monthly, fallback_to_gamma=True
+        )
+
+    assert diagnostics.fell_back_to_gamma
+    assert diagnostics.distribution is indices.Distribution.gamma
+    assert set(diagnostics.parameters) == {"alpha", "beta", "prob_zero"}
+
+
+def test_fit_diagnostics_uses_supplied_parameters_without_refitting():
+    """Caller-supplied parameters are normalized and reported, not refitted from the data."""
+    values = np.arange(1.0, 481.0).reshape(40, 12)
+    alphas = np.full(12, 4.0)
+    betas = np.full(12, 8.0)
+
+    with mock.patch("climate_indices.compute.gamma_parameters", side_effect=AssertionError("refit")):
+        diagnostics = compute.fit_diagnostics(
+            values,
+            indices.Distribution.gamma,
+            1981,
+            1981,
+            2010,
+            compute.Periodicity.monthly,
+            {"alphas": alphas, "betas": betas},
+        )
+
+    np.testing.assert_array_equal(diagnostics.parameters["alpha"], alphas)
+    np.testing.assert_array_equal(diagnostics.parameters["beta"], betas)
+
+
+def test_fit_diagnostics_matches_scipy_kolmogorov_smirnov():
+    """The reported D statistic and p-value match SciPy on the same calibration sample."""
+    values = np.arange(1.0, 481.0).reshape(40, 12)
+
+    diagnostics = compute.fit_diagnostics(
+        values, indices.Distribution.gamma, 1981, 1981, 2010, compute.Periodicity.monthly
+    )
+
+    calibration_sample = values[:30, 0]
+    sample = np.sort(calibration_sample[(~np.isnan(calibration_sample)) & (calibration_sample != 0)])
+    alpha = diagnostics.parameters["alpha"][0]
+    beta = diagnostics.parameters["beta"][0]
+    expected = scipy.stats.kstest(sample, lambda column: scipy.special.gammainc(alpha, column / beta))
+
+    assert diagnostics.ks_statistic[0] == pytest.approx(expected.statistic)
+    assert diagnostics.ks_p_value[0] == pytest.approx(expected.pvalue)
+
+
+@pytest.mark.parametrize("all_missing", [np.full((40, 12), np.nan), np.ma.masked_all((40, 12))])
+def test_fit_diagnostics_reports_missing_for_an_all_missing_input(all_missing):
+    """A masked or all-NaN input has no valid sample and reports missing diagnostics."""
+    diagnostics = compute.fit_diagnostics(
+        all_missing, indices.Distribution.gamma, 1981, 1981, 2010, compute.Periodicity.monthly
+    )
+
+    assert diagnostics.n_valid.shape == (12,)
+    assert np.all(diagnostics.n_valid == 0)
+    assert np.all(np.isnan(diagnostics.ks_statistic))
+    assert np.all(np.isnan(diagnostics.ks_p_value))
+
+
+def test_fit_diagnostics_rejects_a_partial_pearson_parameter_set():
+    """A partial parameter set is the same argument error the transform raises, not a silent fit."""
+    values = np.arange(1.0, 481.0).reshape(40, 12)
+
+    with pytest.raises(ValueError, match="either none or all"):
+        compute.fit_diagnostics(
+            values,
+            indices.Distribution.pearson,
+            1981,
+            1981,
+            2010,
+            compute.Periodicity.monthly,
+            {"loc": np.ones(12)},
+        )
+
+
+def test_fit_diagnostics_raises_for_a_partial_pearson_parameter_set_with_the_fall_back_enabled():
+    """A partial Pearson set is an argument error even when the fall back is enabled (#1215)."""
+    values = np.arange(1.0, 481.0).reshape(40, 12)
+
+    with mock.patch("climate_indices.compute.transform_fitted_gamma") as gamma:
+        with pytest.raises(ValueError, match="either none or all"):
+            compute.fit_diagnostics(
+                values,
+                indices.Distribution.pearson,
+                1981,
+                1981,
+                2010,
+                compute.Periodicity.monthly,
+                {"loc": np.ones(12)},
+                fallback_to_gamma=True,
+            )
+
+    gamma.assert_not_called()
+
+
+@pytest.mark.parametrize("fallback_to_gamma", [False, True])
+@pytest.mark.parametrize("periods", [1, 11, 13])
+def test_fit_diagnostics_raises_for_mis_shaped_pearson_parameters(fallback_to_gamma, periods):
+    """A Pearson parameter that does not carry the period axis is an argument error (#1215).
+
+    Both the short set (an ``IndexError`` from the diagnostics indexing) and the long
+    set (silently misaligned per-step diagnostics) must fail loudly.
+    """
+    values = np.arange(1.0, 481.0).reshape(40, 12)
+    parameters = {
+        "prob_zero": np.zeros(periods),
+        "loc": np.ones(periods),
+        "scale": np.ones(periods),
+        "skew": np.ones(periods),
+    }
+
+    with pytest.raises(ValueError, match="must carry the period length"):
+        compute.fit_diagnostics(
+            values,
+            indices.Distribution.pearson,
+            1981,
+            1981,
+            2010,
+            compute.Periodicity.monthly,
+            parameters,
+            fallback_to_gamma=fallback_to_gamma,
+        )
+
+
+def test_fit_diagnostics_propagates_a_goodness_of_fit_warning_error():
+    """Under ``-W error::GoodnessOfFitWarning`` the diagnostics surface does not fall back (#1215)."""
+    values = np.arange(1.0, 481.0).reshape(40, 12)
+
+    with mock.patch(
+        "climate_indices.compute._check_goodness_of_fit_pearson",
+        side_effect=lambda *args, **kwargs: warnings.warn(GoodnessOfFitWarning("poor fit"), stacklevel=2),
+    ):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", GoodnessOfFitWarning)
+            with mock.patch("climate_indices.compute.transform_fitted_gamma") as gamma:
+                with pytest.raises(GoodnessOfFitWarning):
+                    compute.fit_diagnostics(
+                        values,
+                        indices.Distribution.pearson,
+                        1981,
+                        1981,
+                        2010,
+                        compute.Periodicity.monthly,
+                        fallback_to_gamma=True,
+                    )
+
+    gamma.assert_not_called()

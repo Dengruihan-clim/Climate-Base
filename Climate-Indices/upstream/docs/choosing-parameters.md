@@ -1,0 +1,206 @@
+# Choose a distribution and calibration period
+
+Goal: pick a distribution and calibration period deliberately, and read back what
+a run was parameterized with. SPI and SPEI are fitted against a distribution over
+a calibration period; `eddi`, `percentage_of_normal`, and the Palmer indices are
+ranked or fitted over one too, while PET and PCI take no calibration period. The
+choices come from the caller, and few of them are validated: no index rejects an
+unrepresentative baseline, and SPI and SPEI silently widen a calibration request
+that falls outside the record. What each index measures is in {doc}`algorithms`;
+the value contract is in {doc}`data_requirements`.
+
+## Prerequisites
+
+- Input that satisfies {doc}`data_requirements`: complete chronological months, the
+  366-day daily layout or Gregorian coordinates, declared units, and the missing
+  values marked.
+- The years the input actually covers, and how much of the calibration window is
+  non-missing — for a single-series in-memory xarray input that contains NaNs,
+  the API raises when the window holds fewer than 30 effective non-NaN years.
+- For a gridded fit, a sense of how zero-inflated the precipitation is.
+
+## Choose the distribution
+
+SPI and SPEI take a `distribution` argument. The command line has no distribution
+option and writes both for every requested scale.
+
+- Use `indices.Distribution.gamma` as the starting point: it is the choice
+  recommended by McKee et al. (1993), estimates few parameters, and is the right
+  fit for strongly zero-inflated precipitation.
+- Use `indices.Distribution.pearson` for highly skewed data, or when a gamma fit
+  is poor by the Kolmogorov-Smirnov check (p < 0.05). It has more parameters and
+  needs more data for a stable estimate.
+- Use `indices.Distribution.loglogistic` for SPEI when you want the distribution
+  that SPEIbase and the R `SPEI` package standardize with. It fits Hosking's
+  generalized logistic with unbiased-PWM L-moments. It is SPEI-only: on `spi()`
+  and `standardized_index()` a non-negative series has a physical zero mass that
+  the log-logistic path does not place, so those surfaces reject it
+  ([ADR-0016](adr/0016-log-logistic-distribution-for-spei.md)). SPEI's `P - PET`
+  series is offset and has no physical zero mass, so it accepts the fit directly.
+- Use `indices.Distribution.empirical` on `standardized_index()` when the record is
+  long enough to rank against, or the series is signed. It fits nothing: a value's
+  probability is its plotting position `(1 + k) / (n + 2)` among the `n` valid
+  calibration values at its calendar step, `k` of them at or below it, the convention
+  of the SEI R package. Allen & Otero (2023) recommend it above roughly 100
+  observations. A step with fewer than ten valid calibration values is missing. For
+  daily data with NaN at 29 February of non-leap years, that includes 29 February
+  unless the calibration period spans ten leap years; `utils.transform_to_366day`
+  fills the day instead. No value scores beyond the calibration range. It has no zero mass, so
+  `zero_handling` does not apply, and no `fitting_params`. Pass `clip_negatives=False`
+  to keep a signed series such as residual load; gamma and Pearson Type III reject
+  negatives under that setting rather than clip them (ADR-0019).
+- Use `indices.Distribution.beta` on `standardized_index()` for a series bounded by
+  `[0, 1]`, such as a wind or PV capacity factor, with
+  `aggregation="mean"` so a window stays inside the support. It fits the interior
+  values by the method of moments and treats the exact 0s and 1s as point masses at
+  the boundaries, so a value outside `[0, 1]` is an error rather than something to
+  clip ([ADR-0024](adr/0024-beta-distribution-for-bounded-series.md)). Only
+  `standardized_index()` accepts it, and no independent beta implementation is
+  available to validate the fit against, so treat its evidence as specification and
+  regression until one is matched.
+
+The fallout of an unstable Pearson fit differs by index: SPI falls back to gamma
+for that fit, while SPEI does not fall back at all, so check the Pearson fit
+before committing to it there. {doc}`data_requirements` has the error contract
+for each path. On gridded input the SPI fallback is per spatial block, so a block
+whose fit fails is standardized with gamma while its neighbours use Pearson — see
+[ADR-0009](adr/0009-spatial-block-declaration.md). For maps of KS p-values and
+`prob_zero`, plus PIT histograms for SPI-1/3/12, follow
+{doc}`checking-distribution-fit`; a low p-value flags a fit to inspect, not a
+calibrated test on independently held-out data.
+
+To standardize new data against a fit computed once — a projection run, or a rerun
+that must not refit — compute the parameters and pass them as `fitting_params`
+(gamma: `alpha` and `beta`; Pearson: `prob_zero`, `loc`, `scale`, `skew`; beta:
+`alpha`, `beta`, `prob_zero`, `prob_one`).
+{doc}`workflow-examples` has the fit-and-reuse example and the scale-matching
+caveat. Two limits apply. A reused gamma fit fixes the continuous part of the
+distribution only; the zero mass is counted from the values each call receives
+unless the saved `fitting_params` also carries `prob_zero` (or the deprecated
+`probabilities_of_zero`), which then sets the mass too (ADR-0015). And per-cell
+parameter arrays align only on the NumPy API or on a whole-grid in-memory call:
+the xarray adapter passes one `fitting_params` value to every Dask block, so a
+Dask run should reuse period-only parameters, or let each block fit.
+
+## Choose a zero-handling mode
+
+SPI and `standardized_index()` take a `zero_handling` argument that places the
+probability mass of exact zero accumulations when the fit is transformed; SPEI
+does not, because its `P − PET` series has no physical zero mass (ADR-0015).
+
+- `"classic"` (the default) scores a zero at `Φ⁻¹(p0)`, the top of the zero mass.
+  It matches NOAA/NCEI and SPEIbase output, so keep it whenever results are
+  compared with those products.
+- Where zeros are common — arid cells, dry seasons, daily and short-timescale SPI
+  — `p0` can exceed 0.5, and a completely dry period then scores `SPI ≥ 0`. Use
+  `"center_of_mass"` or `"mean_zero"` there. `"center_of_mass"` (Stagge et al.,
+  2015) scores a zero at the centre of the mass, giving an ideal probability-scale
+  mean of 0.5; `"mean_zero"` (Allen & Otero, 2024) gives the conditional mean of
+  the mass, an ideal normal-scale mean of 0.
+
+Both non-classic modes move the zero mass only. For Pearson Type III a positive
+trace value below 0.0005 shares a zero's position where `0 < p0 < 1`, so it moves
+too. The beta distribution applies the mode to both of its boundary masses, placing
+a one at the mirror of a zero's position about 1/2; its own point-mass contract is in
+[ADR-0024](adr/0024-beta-distribution-for-bounded-series.md). The formulas and their
+edge cases are in {doc}`algorithm-reference`.
+
+## Choose an aggregation
+
+`standardized_index()` takes a keyword-only `aggregation` that decides whether each
+window of `scale` time steps is accumulated before the fit — the default, and what
+`spi()` and `spei()` always do — or averaged over it (ADR-0019). A mean is the window
+sum divided by `scale`, so a window holding a missing value is missing either way, and
+the default leaves every existing result unchanged.
+
+- `"sum"` (the default) accumulates the window. It is what SPI and SPEI mean, and it is
+  the right choice for a series whose accumulated value is what carries the information.
+- Use `"mean"` when the series is bounded and a value means something other than an
+  accumulation: a capacity factor averaged over a week stays in [0, 1], where its sum
+  does not. Keeping the value in the series' own range also keeps it fittable by a
+  distribution whose support is that range, such as beta.
+
+Where standardization is rank-based, the choice does not change the result at all: a sum
+is its mean multiplied by `scale`, so the ranked probabilities are identical. Choose on
+what the accumulated value is meant to represent. `standardized_index()` and
+`indices.fit_diagnostics()` expose the argument on the NumPy path; the xarray adapter and
+the CLI carry the default. Diagnostics taken with one aggregation describe a fit for that
+aggregation, so reuse the same one when passing the parameters back.
+
+## Choose the calibration period
+
+- 30 years is the documented minimum. On the NumPy path a shorter period emits
+  `ShortCalibrationWarning`, and more than 20% missing values inside the period
+  warns about fitting reliability. A single-series in-memory xarray input that
+  contains missing values is checked against the same threshold and raises
+  `InsufficientDataError` when the window falls short. A window the record
+  does not cover is fitted on the years it does cover, or on the whole record,
+  with a `CalibrationPeriodClampedWarning`, and the check reads those years.
+  Gridded in-memory inputs and Dask-backed inputs skip
+  that check, so confirm your own coverage there. {doc}`data_requirements` is
+  the full contract.
+- The period must fall inside the input's year coverage. Matching it there is the
+  caller's responsibility for SPI and SPEI: a request outside the record is
+  replaced with the full available record, without an error, and the result
+  metadata still records the years you asked for rather than the years used.
+  Keep the request inside the coverage if you want the two to agree. `eddi` does
+  raise `InvalidArgumentError` for out-of-range bounds, and
+  `percentage_of_normal` only partially validates them.
+- On the command line, set `--calibration_start_year` and
+  `--calibration_end_year`. The xarray API infers both from the `time` coordinate
+  when they are omitted, and records inferred years in the result either way;
+  pass them explicitly in anything published or compared, so the baseline is
+  visible in the call itself and does not move with the coordinate values.
+- Prefer a WMO-recommended normal period (for example 1991-2020), avoid periods
+  with major gaps, and revisit the baseline when the climate record moves on. The
+  selection guidance behind these rules is in {doc}`algorithms`. The
+  [notebook](https://github.com/monocongo/climate_indices/blob/main/notebooks/zarr_dask_spi_spei.ipynb)
+  works through a full run that passes an explicit 1981-2010 period.
+
+## Verify the choices
+
+Fit a sample of your data and read the warnings and the result metadata back:
+
+```python
+import warnings
+
+import numpy as np
+import pandas as pd
+import xarray as xr
+
+from climate_indices import spi
+from climate_indices.indices import Distribution
+
+rng = np.random.default_rng(42)
+precip = xr.DataArray(
+    rng.gamma(shape=2.0, scale=15.0, size=40 * 12),
+    coords={"time": pd.date_range("1981-01-01", periods=40 * 12, freq="MS")},
+    dims=["time"],
+    attrs={"units": "mm"},
+)
+
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    result = spi(
+        values=precip,
+        scale=3,
+        distribution=Distribution.gamma,
+        calibration_year_initial=1981,
+        calibration_year_final=2010,
+    )
+
+print([f"{warning.category.__name__}: {warning.message}" for warning in caught])
+print(result.attrs["distribution"], result.attrs["calibration_year_initial"])
+
+# The recorded years are the requested ones: confirm they fall inside the record,
+# or the fit used everything while the metadata says otherwise.
+years = precip["time"].dt.year
+print("coverage:", int(years[0]), int(years[-1]))
+```
+
+A `GoodnessOfFitWarning` or `ShortCalibrationWarning` here is a fit report, not a
+failure — decide whether the period or distribution should change. Under
+`scheduler="processes"` those warnings are raised in the workers, so they appear
+on the workers' stderr rather than in `caught` ({doc}`performance` explains the
+scheduler choice). The result records `distribution` and the requested
+calibration years, alongside `scale` and `climate_indices_version`.

@@ -1,0 +1,376 @@
+"""Static type verification tests for mypy.
+
+These tests use typing.assert_type() to verify that mypy correctly infers
+return types for the overloaded public API functions. assert_type() is a
+runtime no-op, so only mypy enforces them: the `lint` CI job runs
+`mypy src/ tests/test_type_checking.py`. The `meta` job also runs this module
+under pytest, which executes the call bodies but verifies no types.
+"""
+
+from __future__ import annotations
+
+import sys
+
+import numpy as np
+import numpy.typing as npt
+import pandas as pd
+
+if sys.version_info >= (3, 11):
+    from typing import assert_type
+else:
+    from typing_extensions import assert_type
+import xarray as xr
+
+from climate_indices import compound, energy, fire, fit_diagnostics, percentage_of_normal, spei, spi
+from climate_indices.compute import FitDiagnostics, Periodicity
+from climate_indices.indices import Distribution
+from climate_indices.indices import percentage_of_normal as numpy_pnp
+from climate_indices.runs import RunSet, RunStatistics, summarize_runs
+
+
+def test_energy_event_return_types() -> None:
+    result = energy.energy_drought_events([-2, 0, -3], max_gap=1, periods=[2020, 2020, 2021])
+    assert_type(result, RunStatistics)
+    assert_type(result.events, RunSet)
+    assert_type(result.count, npt.NDArray[np.int64])
+    assert_type(result.frequency, npt.NDArray[np.float64])
+    assert_type(summarize_runs([-2, 0, -3]), RunStatistics)
+    series = xr.DataArray([-2.0, 0.0, -3.0], dims="time")
+    assert_type(energy.energy_drought_events(series), RunStatistics | xr.Dataset)
+    grid: xr.DataArray = series.expand_dims(site=[0])
+    assert_type(energy.energy_drought_events(grid), RunStatistics | xr.Dataset)
+
+
+def test_compound_bootstrap_numpy_return_types() -> None:
+    """The monthly inference route retains typed numeric fields without an adapter."""
+    time = (np.datetime64("1900-01", "M") + np.arange(40 * 12)).astype("datetime64[D]")
+    rows = np.ones((2, len(time)), dtype=bool)
+    hazards = compound.AlignedHazards(("A", "B"), time, "monthly", rows, rows, {})
+    result = compound.bootstrap_dependence(hazards, statistic="joint_probability", seed=1, n_resamples=1)
+    assert_type(result, compound.BootstrapResult)
+    assert_type(result.estimate, npt.NDArray[np.float64])
+    assert_type(result.p_value, npt.NDArray[np.float64])
+    assert_type(result.n_valid, npt.NDArray[np.int64])
+    assert_type(result.n_marginal, npt.NDArray[np.int64])
+    assert_type(result.n_joint, npt.NDArray[np.int64])
+    assert_type(result.expected_null_successes, npt.NDArray[np.float64])
+    assert_type(result.n_years, npt.NDArray[np.int64])
+    assert_type(result.inference_start, npt.NDArray[np.datetime64])
+
+
+def test_compound_numpy_and_xarray_routes_select_their_return_types() -> None:
+    """Each compound function returns its dataclass for NumPy input and a Dataset for xarray input."""
+    months = np.arange("1900-01", "1940-01", dtype="datetime64[M]")
+    flags = np.ones(len(months), dtype=bool)
+    aligned = compound.harmonize(
+        {"a": flags, "b": flags},
+        time={"a": months, "b": months},
+        cadence={"a": "monthly", "b": "monthly"},
+        input_scale={"a": "indicator", "b": "indicator"},
+        thresholds={"a": 0.5, "b": 0.5},
+        directions={"a": "above", "b": "above"},
+        target_cadence="monthly",
+    )
+    assert_type(aligned, compound.AlignedHazards)
+    assert_type(compound.joint_statistics(aligned, min_samples=1), compound.JointResult)
+    assert_type(
+        compound.conditional_probability(aligned, given="a", target="b", min_samples=1), compound.ConditionalResult
+    )
+
+    arrays = {name: xr.DataArray(flags, dims="time", coords={"time": months}) for name in ("a", "b")}
+    prepared = compound.harmonize(
+        arrays,
+        cadence={"a": "monthly", "b": "monthly"},
+        input_scale={"a": "indicator", "b": "indicator"},
+        thresholds={"a": 0.5, "b": 0.5},
+        directions={"a": "above", "b": "above"},
+        target_cadence="monthly",
+    )
+    assert_type(prepared, xr.Dataset)
+    assert_type(compound.joint_statistics(prepared, min_samples=1), xr.Dataset)
+    assert_type(compound.conditional_probability(prepared, given="a", target="b", min_samples=1), xr.Dataset)
+    assert_type(compound.compound_events_xarray(prepared, first="a", second="b", mode="concurrent"), xr.Dataset)
+    assert_type(
+        compound.bootstrap_dependence(prepared, statistic="joint_probability", seed=1, n_resamples=1), xr.Dataset
+    )
+
+
+def test_energy_wind_numpy_return_types() -> None:
+    """The namespaced wind transforms return float64 arrays, including scalar input."""
+    assert_type(energy.hub_height_wind_speed([2.0, 5.0], np.int64(10), np.float64(100)), npt.NDArray[np.float64])
+    assert_type(energy.wind_shear_exponent(2.0, 5.0, upper_height=np.int64(100)), npt.NDArray[np.float64])
+    assert_type(energy.wind_capacity_factor([5.0], "generic"), npt.NDArray[np.float64])
+    assert_type(energy.wind_capacity_factor(5.0, ([0, 10], [0, 1])), npt.NDArray[np.float64])
+
+
+def test_energy_solar_numpy_return_types() -> None:
+    assert_type(energy.pv_capacity_factor([500.0], [20.0], [2.0]), npt.NDArray[np.float64])
+    assert_type(energy.pv_capacity_factor(500.0, 20.0, 2.0), npt.NDArray[np.float64])
+
+
+def test_energy_degree_day_numpy_return_types() -> None:
+    assert_type(energy.heating_degree_days([10.0], base_temperature=18.0), npt.NDArray[np.float64])
+    assert_type(energy.cooling_degree_days([25.0], base_temperature=18.0), npt.NDArray[np.float64])
+    assert_type(
+        energy.energy_degree_days([10.0], heating_base_temperature=18.0, cooling_base_temperature=24.0),
+        npt.NDArray[np.float64],
+    )
+
+
+def test_energy_xarray_return_types() -> None:
+    data = xr.DataArray([10.0, 20.0], dims="site", coords={"site": ["a", "b"]})
+    assert_type(energy.heating_degree_days(data, base_temperature=18.0), xr.DataArray)
+    assert_type(energy.cooling_degree_days(data, base_temperature=18.0), xr.DataArray)
+    assert_type(
+        energy.energy_degree_days(data, heating_base_temperature=18.0, cooling_base_temperature=24.0), xr.DataArray
+    )
+    assert_type(energy.hub_height_wind_speed(data, 10.0, 100.0), xr.DataArray)
+    upper: xr.DataArray = data * 1.5
+    assert_type(energy.wind_shear_exponent(data, upper), xr.DataArray)
+
+
+def test_spi_numpy_return_type() -> None:
+    """Verify mypy infers np.ndarray for NumPy input."""
+    # 40 years * 12 months = 480 values
+    rng = np.random.default_rng(42)
+    values = rng.gamma(shape=2.0, scale=50.0, size=480)
+    result = spi(
+        values=values,
+        scale=6,
+        distribution=Distribution.gamma,
+        data_start_year=1980,
+        calibration_year_initial=1980,
+        calibration_year_final=2019,
+        periodicity=Periodicity.monthly,
+    )
+    assert_type(result, npt.NDArray[np.float64])
+
+
+def test_fit_diagnostics_numpy_aggregation_type() -> None:
+    """The NumPy diagnostics overload accepts mean aggregation and retains its return type."""
+    values = np.random.default_rng(42).gamma(shape=2.0, scale=50.0, size=480)
+    result = fit_diagnostics(values, 3, Distribution.gamma, 1980, 1980, 2019, Periodicity.monthly, aggregation="mean")
+    assert_type(result, FitDiagnostics)
+
+
+def test_spi_xarray_return_type() -> None:
+    """Verify mypy infers xr.DataArray for xarray input."""
+    time = pd.date_range("1980-01-01", "2019-12-01", freq="MS")
+    rng = np.random.default_rng(42)
+    values = xr.DataArray(
+        rng.gamma(shape=2.0, scale=50.0, size=len(time)),
+        coords={"time": time},
+        dims=["time"],
+    )
+    result = spi(
+        values=values,
+        scale=6,
+        distribution=Distribution.gamma,
+    )
+    assert_type(result, xr.DataArray)
+
+
+def test_spi_zero_handling_types() -> None:
+    """Verify both overloads accept a zero_handling mode and keep their return types."""
+    rng = np.random.default_rng(42)
+    values = rng.gamma(shape=2.0, scale=50.0, size=480)
+    values[::3] = 0.0
+    numpy_result = spi(
+        values,
+        1,
+        Distribution.gamma,
+        1980,
+        1980,
+        2019,
+        Periodicity.monthly,
+        zero_handling="mean_zero",
+    )
+    assert_type(numpy_result, npt.NDArray[np.float64])
+
+    time = pd.date_range("1980-01-01", "2019-12-01", freq="MS")
+    xarray_result = spi(
+        xr.DataArray(values, coords={"time": time}, dims=["time"]),
+        1,
+        Distribution.gamma,
+        zero_handling="center_of_mass",
+    )
+    assert_type(xarray_result, xr.DataArray)
+
+
+def test_pnp_legacy_keyword_types() -> None:
+    """Legacy calibration keywords remain typed on both NumPy and xarray routes."""
+    values = np.ones(480)
+    assert_type(
+        numpy_pnp(
+            values,
+            1,
+            1980,
+            calibration_start_year=1980,
+            calibration_end_year=2019,
+            periodicity=Periodicity.monthly,
+        ),
+        np.ndarray,
+    )
+    assert_type(
+        percentage_of_normal(
+            values,
+            1,
+            1980,
+            calibration_start_year=1980,
+            calibration_end_year=2019,
+            periodicity=Periodicity.monthly,
+        ),
+        npt.NDArray[np.float64],
+    )
+    assert_type(
+        numpy_pnp(
+            values, 1, 1980, calibration_year_initial=1980, calibration_end_year=2019, periodicity=Periodicity.monthly
+        ),
+        np.ndarray,
+    )
+    assert_type(
+        numpy_pnp(
+            values, 1, 1980, calibration_start_year=1980, calibration_year_final=2019, periodicity=Periodicity.monthly
+        ),
+        np.ndarray,
+    )
+    assert_type(
+        percentage_of_normal(
+            values, 1, 1980, calibration_year_initial=1980, calibration_end_year=2019, periodicity=Periodicity.monthly
+        ),
+        npt.NDArray[np.float64],
+    )
+    assert_type(
+        percentage_of_normal(
+            values, 1, 1980, calibration_start_year=1980, calibration_year_final=2019, periodicity=Periodicity.monthly
+        ),
+        npt.NDArray[np.float64],
+    )
+    dates = pd.date_range("1980-01-01", "2019-12-01", freq="MS")
+    data = xr.DataArray(values, coords={"time": dates}, dims=["time"])
+    assert_type(percentage_of_normal(data, 1, calibration_start_year=1980, calibration_end_year=2019), xr.DataArray)
+    assert_type(percentage_of_normal(data, 1, calibration_year_initial=1980, calibration_end_year=2019), xr.DataArray)
+    assert_type(percentage_of_normal(data, 1, calibration_start_year=1980, calibration_year_final=2019), xr.DataArray)
+
+
+def test_spei_numpy_return_type() -> None:
+    """Verify mypy infers np.ndarray for NumPy input."""
+    # 40 years * 12 months = 480 values
+    rng = np.random.default_rng(42)
+    precips = rng.gamma(shape=2.0, scale=50.0, size=480)
+    pet = rng.gamma(shape=2.0, scale=30.0, size=480)
+    result = spei(
+        precips_mm=precips,
+        pet_mm=pet,
+        scale=6,
+        distribution=Distribution.gamma,
+        periodicity=Periodicity.monthly,
+        data_start_year=1980,
+        calibration_year_initial=1980,
+        calibration_year_final=2019,
+    )
+    assert_type(result, npt.NDArray[np.float64])
+
+
+def test_spei_xarray_return_type() -> None:
+    """Verify mypy infers xr.DataArray for xarray input."""
+    time = pd.date_range("1980-01-01", "2019-12-01", freq="MS")
+    rng = np.random.default_rng(42)
+    precips = xr.DataArray(
+        rng.gamma(shape=2.0, scale=50.0, size=len(time)),
+        coords={"time": time},
+        dims=["time"],
+    )
+    pet = xr.DataArray(
+        rng.gamma(shape=2.0, scale=30.0, size=len(time)),
+        coords={"time": time},
+        dims=["time"],
+    )
+    result = spei(
+        precips_mm=precips,
+        pet_mm=pet,
+        scale=6,
+        distribution=Distribution.gamma,
+    )
+    assert_type(result, xr.DataArray)
+
+
+def test_flood_xarray_return_types() -> None:
+    """DataArray must match the xarray overload before the broad ArrayLike overload."""
+    from climate_indices import flood
+
+    dates = pd.date_range("2000-01-01", "2002-12-31", freq="D")
+    pe = xr.DataArray(np.arange(len(dates), dtype=float), dims=["time"], coords={"time": dates})
+    assert_type(flood.effective_precipitation(pe), xr.DataArray)
+    assert_type(flood.edi(pe), xr.DataArray)
+    assert_type(flood.flood_index(pe, year_start_month=1), xr.DataArray)
+
+
+def test_kbdi_numpy_return_type() -> None:
+    """Verify mypy infers np.ndarray for NumPy input.
+
+    Regression test: the xr.DataArray overload must be declared before the
+    npt.ArrayLike overload. xr.DataArray implements __array__, so it
+    satisfies npt.ArrayLike structurally -- if the ArrayLike overload came
+    first, mypy would match it for DataArray calls too, and the DataArray
+    overload below would be unreachable.
+    """
+    rng = np.random.default_rng(42)
+    precipitation = rng.gamma(shape=2.0, scale=3.0, size=100)
+    temperature = rng.uniform(-5.0, 35.0, size=100)
+    # kbdi() isn't overloaded on return_state (unlike spi/spei above), so its
+    # return type is always a union with KBDIResult, even when return_state
+    # defaults to False.
+    result = fire.kbdi(precipitation, temperature, 1000.0)
+    assert_type(result, npt.NDArray[np.float64] | fire.KBDIResult)
+
+
+def test_kbdi_xarray_return_type() -> None:
+    """Verify mypy infers xr.DataArray for xarray input (see test_kbdi_numpy_return_type)."""
+    time = pd.date_range("2000-01-01", periods=100, freq="D")
+    rng = np.random.default_rng(42)
+    precipitation = xr.DataArray(rng.gamma(shape=2.0, scale=3.0, size=100), coords={"time": time}, dims=["time"])
+    temperature = xr.DataArray(rng.uniform(-5.0, 35.0, size=100), coords={"time": time}, dims=["time"])
+    result = fire.kbdi(precipitation, temperature, 1000.0)
+    assert_type(result, xr.DataArray | fire.KBDIResult)
+
+
+def test_hdw_numpy_return_type() -> None:
+    """Verify mypy infers np.ndarray for NumPy input (see test_kbdi_numpy_return_type)."""
+    result = fire.hot_dry_windy([30.0, 26.0], [15.0, 30.0], [8.0, 12.0], [10.0, 400.0])
+    assert_type(result, npt.NDArray[np.float64])
+
+
+def test_hdw_xarray_return_type() -> None:
+    """Verify mypy infers xr.DataArray for xarray input (see test_kbdi_numpy_return_type)."""
+    dims = ["level"]
+    temperature = xr.DataArray([30.0, 26.0], dims=dims)
+    humidity = xr.DataArray([15.0, 30.0], dims=dims)
+    wind = xr.DataArray([8.0, 12.0], dims=dims)
+    height = xr.DataArray([10.0, 400.0], dims=dims)
+    result = fire.hot_dry_windy(temperature, humidity, wind, height)
+    assert_type(result, xr.DataArray)
+
+
+def test_haines_index_numpy_return_type() -> None:
+    """Verify mypy infers np.ndarray for NumPy input (see test_kbdi_numpy_return_type)."""
+    result = fire.haines_index([32.0, 20.0], [24.0, 5.0], [13.0, 0.0], variant="low")
+    assert_type(result, npt.NDArray[np.float64])
+
+
+def test_haines_index_xarray_return_type() -> None:
+    """Verify mypy infers xr.DataArray for xarray input (see test_kbdi_numpy_return_type)."""
+    dims = ["level"]
+    temperature_lower = xr.DataArray([32.0, 20.0], dims=dims)
+    temperature_upper = xr.DataArray([24.0, 5.0], dims=dims)
+    dewpoint = xr.DataArray([13.0, 0.0], dims=dims)
+    result = fire.haines_index(temperature_lower, temperature_upper, dewpoint, variant="low")
+    assert_type(result, xr.DataArray)
+
+
+def test_haines_index_from_profile_numpy_return_type() -> None:
+    """The profile entry point is NumPy-only and always returns an ndarray."""
+    result = fire.haines_index_from_profile(
+        [32.0, 24.0, 12.0, -8.0], [26.0, 13.0, 2.0, -20.0], [950.0, 850.0, 700.0, 500.0], 100.0
+    )
+    assert_type(result, npt.NDArray[np.float64])

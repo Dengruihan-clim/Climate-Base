@@ -1,0 +1,284 @@
+# Deployment Guide
+
+## Docker Deployment
+
+### Building the Container
+```bash
+docker build -t climate_indices:X.Y.Z .
+```
+
+### Running the Container
+```bash
+docker run -v $(pwd)/data:/data climate_indices:X.Y.Z \
+    --index spi \
+    --periodicity monthly \
+    --scales 6 \
+    --netcdf_precip /data/precip.nc \
+    --var_name_precip prcp \
+    --calibration_start_year 1981 \
+    --calibration_end_year 2010 \
+    --output_file_base /data/spi
+```
+
+### Dockerfile Overview
+```dockerfile
+# Multi-stage build
+FROM python:3.14-slim AS builder
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
+COPY README.md LICENSE ./
+COPY src/ ./src/
+RUN uv sync --frozen --no-dev
+
+FROM python:3.14-slim
+RUN apt-get update && apt-get install -y libhdf5-dev libnetcdf-dev
+COPY --from=builder /app/.venv /app/.venv
+COPY src/ ./src/
+USER climate  # Non-root user
+ENTRYPOINT ["python", "-m", "climate_indices"]
+```
+
+## CI/CD Pipelines
+
+### 1. Unit Tests Workflow (`unit-tests-workflow.yml`)
+
+**Trigger**: Pull requests to `main`, pushes to `main`, merge groups, a weekly
+schedule (Mondays), and manual dispatch
+
+**Core test matrix** (`pytest -n auto`, split across two jobs):
+- `test` (every event): ubuntu-latest on Python 3.10, 3.11, 3.12, 3.13, and 3.14,
+  plus macOS on 3.14
+- `test-full` (everything except pull requests): macOS on Python 3.10
+
+`uv.lock` resolves three distinct dependency stacks (3.10; 3.11; and 3.12
+through 3.14, which install identical packages), yet interpreter behavior
+differs, so a pull request still exercises every supported minor on Linux.
+Together the two jobs cover every supported Python on Linux and both boundaries
+on macOS, and `tests/test_release_integrity.py` enforces that the two never
+overlap and never drop a supported version.
+
+Single-owner jobs run once per event: `lint` (ruff, mypy), `docs`, `validation`
+(3.12), `meta` (repo checks, 3.10), `test-minimum-deps` (3.10), `notebooks`, and
+`security-audit`.
+
+Three Rust jobs run on every event next to the pure-Python legs: `rust` (cargo
+fmt, clippy, and tests), `test-native` (the core suite with the extension built and
+`CLIMATE_INDICES_REQUIRE_NATIVE=1`, on the boundary legs of `test`), and
+`native-wheel` (maturin wheels at both boundary Pythons on Linux and macOS, plus a
+Windows 3.14 smoke build, each installed and checked outside the checkout). They
+validate wheels but publish nothing. See `docs/architecture.md` § *Optional Rust
+Backend*.
+
+**Steps** (each test leg):
+1. Checkout code
+2. Setup Python and uv
+3. Install dependencies: `uv sync --locked --dev`
+4. Run core tests: `pytest -n auto` (validation and repo checks are excluded;
+   their own jobs run them)
+
+### 2. Release Workflow (`release.yml`)
+
+**Trigger**: Git tag push (vX.Y.Z)
+
+**Steps**:
+1. Checkout the tagged commit
+2. Validate exact `vX.Y.Z` tag format
+3. Run linting, formatting checks, type checking, tests, release integrity
+   tests, and security audit
+4. Validate the tag version matches `pyproject.toml`
+5. Build the pure-Python distribution with `python -m build`
+   - Wheel: `climate_indices-X.Y.Z-py3-none-any.whl`
+   - Source dist: `climate_indices-X.Y.Z.tar.gz`
+6. Build the five binary wheels that carry `climate_indices._native` with maturin:
+   manylinux\_2\_28 x86-64 and aarch64, macOS arm64 and x86-64, and Windows x86-64.
+   They are abi3 (`cp310-abi3-*`), so each one installs on every supported Python
+   (3.10 through 3.14); musllinux is not published
+7. Validate package metadata: `twine check dist/*`
+8. Install the artifacts outside the checkout: `wheel-check` installs each platform
+   wheel on the platform it was built for, asserts pip prefers it over the pure wheel,
+   and asserts SPI dispatches to the Rust kernels; `no-rust-install` installs the pure
+   wheel with `cargo` and `rustc` removed from `PATH`, rebuilds the sdist, and runs the
+   core suite against the installed package on Python 3.10 and 3.14
+9. Publish every artifact to PyPI using trusted publishing (OIDC, no `PYPI_API_TOKEN`)
+10. Create the GitHub Release
+11. `release` environment requires manual approval before publish
+
+**Release Process**:
+```bash
+# 1. Merge a release PR that updates pyproject.toml and CHANGELOG.md
+# 2. After approval, tag from main
+git switch main
+git pull --ff-only origin main
+git tag -a vX.Y.Z -m "Release vX.Y.Z"
+git push origin vX.Y.Z
+
+# 3. GitHub Actions automatically:
+#    - Runs validation
+#    - Builds packages
+#    - Runs twine checks
+#    - Uploads to PyPI (trusted publishing)
+#    - Creates the GitHub Release
+```
+
+### 3. Benchmarks Workflow (`benchmarks.yml`)
+
+**Trigger**: Pull requests targeting `main`, manual dispatch
+
+**Steps**:
+1. Checkout code
+2. Setup Python and uv
+3. Install dependencies: `uv sync --group dev`
+4. Run benchmarks: `pytest -m benchmark --benchmark-enable --benchmark-json=benchmark-results.json --benchmark-columns=mean,stddev,rounds`
+5. Store results as artifact
+6. Compare against baseline when `.benchmarks/baseline.json` exists
+
+**Benchmark Results**:
+- Stored in GitHub Actions artifacts
+- JSON format for historical tracking
+- Regression detection via comparison
+
+## PyPI Distribution
+
+### Package Metadata
+- **Name**: `climate_indices`
+- **Version**: Defined in `pyproject.toml`
+- **License**: BSD 3-Clause
+- **Python**: >=3.10,<3.15
+
+### Installation
+```bash
+# From PyPI, with the optional Rust backend where a platform wheel is published
+pip install climate_indices
+
+# With uv
+uv pip install climate_indices
+
+# Specific version
+pip install "climate_indices==X.Y.Z"
+```
+
+Linux x86-64 and aarch64 (manylinux_2_28, so glibc 2.28 or newer), macOS arm64 and Intel,
+and Windows x86-64 have a wheel that contains the optional Rust acceleration backend;
+every other platform, including a Linux system with older glibc, installs the
+pure-Python `py3-none-any` wheel, and every computation then runs the Python
+implementation. Both are the same version and the same public API. Force the pure wheel
+on a platform that has a binary wheel, or build it from the sdist:
+```bash
+pip install --no-binary climate_indices climate_indices
+```
+Check which backend is installed with `python -c "import climate_indices._native"`: the
+import fails only when the extension is absent, which is not an error
+(ADR-0018 in `docs/adr/`).
+
+### Package Contents
+**Included**:
+- `src/climate_indices/` - All source code
+- `LICENSE` - BSD 3-Clause license
+- `README.md` - Package description
+
+The binary wheels add the compiled extension (`climate_indices/_native.abi3.so`, or
+`_native.pyd` on Windows); the `py3-none-any` wheel and the sdist contain only the
+`_native.pyi` type stub, so both install and run without a Rust toolchain.
+
+**Excluded** (defined in `pyproject.toml`):
+- `tests/` - Test suite
+- `docs/` - Documentation source
+- `notebooks/` - Jupyter notebooks
+- `.github/` - CI/CD workflows
+- `.venv/` - Virtual environment
+- Cache directories
+
+### Build Configuration
+```toml
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+exclude = ["tests/", "docs/", "notebooks/"]
+
+# Builds the published platform wheels and, for developers, `maturin develop`
+[tool.maturin]
+manifest-path = "crates/climate-py/Cargo.toml"
+python-source = "src"
+module-name = "climate_indices._native"
+```
+
+## ReadTheDocs Deployment
+
+### Documentation Hosting
+- **URL**: [https://climate-indices.readthedocs.io/](https://climate-indices.readthedocs.io/)
+- **Source**: `docs/*.md` (Sphinx)
+- **Build**: Automatic on push to `main`
+- **Versions**: Tracks git tags
+
+### Build Configuration
+```python
+# docs/conf.py
+project = "climate_indices"
+# version and release are read from pyproject.toml
+
+extensions = [
+    'sphinx.ext.autodoc',
+    'sphinx.ext.viewcode',
+    'sphinx.ext.githubpages',
+    'myst_parser',
+]
+
+# Markdown is the only page source format (RST retired in 3.0.0)
+source_suffix = ".md"
+```
+
+## Dependency Management
+
+### Lockfile (uv.lock)
+- **Purpose**: Reproducible builds
+- **Update**: `uv lock` (run after pyproject.toml changes)
+- **Commit**: Yes, commit to repository
+
+### Dependency Groups
+```toml
+[project]
+# Core runtime dependencies
+dependencies = [
+    "scipy>=1.15.3",
+    "xarray>=2025.6.1",
+    "dask>=2025.7.0",
+    "structlog>=24.1.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.1",
+    "ruff>=0.12.7",
+    "mypy",
+]
+```
+
+## Monitoring and Observability
+
+### Structured Logging
+```python
+from climate_indices import configure_logging
+import logging
+
+configure_logging(
+    log_level=logging.INFO,
+    log_file="production.log",
+    json_logs=True  # For log aggregators
+)
+```
+
+### Performance Metrics
+- Memory usage monitoring via `check_large_array_memory()`
+- Logged in structured format
+
+### Coverage Tracking
+- **Service**: No external upload step in current GitHub Actions workflows
+- **Target**: >90% line coverage
+- **Verification**: Enforced via test suite execution in CI
+
+---
+
+See {doc}`architecture` for system design and {doc}`development-guide` for local development setup.

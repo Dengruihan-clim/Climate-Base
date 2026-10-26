@@ -1,0 +1,1446 @@
+from __future__ import annotations
+
+import importlib
+import json
+import logging
+import multiprocessing
+import os
+from collections.abc import Callable, Iterator
+from concurrent.futures import Future, ProcessPoolExecutor
+from contextlib import contextmanager
+from pathlib import Path
+from types import ModuleType
+from typing import Any
+
+import numpy as np
+import pandas as pd
+import pytest
+import structlog
+import xarray as xr
+from hypothesis import settings as hypothesis_settings
+
+from climate_indices import compute, eto, logging_config, palmer, pm_eto
+from climate_indices.fire import _native as fire_native
+from climate_indices.flood import _native as flood_native
+
+# The property tests in tests/test_property_based.py assert empirical bounds rather
+# than true invariants - PDSI/PHDI/PMDI in [-30, 30], for instance, on strategies
+# that draw precipitation and PET independently and so can pose physically
+# impossible climates. A fresh search each run therefore fails intermittently on
+# whichever test happens to draw a violating example, which is noise rather than a
+# regression signal. Derandomize by default so a run is reproducible and a failure
+# means the output moved; per-test @settings still override anything they name.
+hypothesis_settings.register_profile("deterministic", derandomize=True)
+hypothesis_settings.load_profile("deterministic")
+
+
+def import_native() -> ModuleType:
+    """Import the Rust extension, skipping the caller when it is not built.
+
+    The native CI legs set ``CLIMATE_INDICES_REQUIRE_NATIVE=1``, which turns the
+    skip into an ImportError so a missing extension fails the run instead of
+    silently dropping every parity test.
+    """
+    if os.environ.get("CLIMATE_INDICES_REQUIRE_NATIVE") == "1":
+        return importlib.import_module("climate_indices._native")
+    return pytest.importorskip("climate_indices._native")
+
+
+@contextmanager
+def preserved_logging_state() -> Iterator[None]:
+    """Restore structlog's configuration and the root logger after a test reconfigures them.
+
+    A fixture that resets logging (``_reset_logging_for_testing``) leaves structlog on
+    its defaults, which print instead of reaching stdlib logging. A module-level
+    logger first used after that, in a later test on the same worker, then never
+    reaches ``caplog``.
+    """
+    root = logging.getLogger()
+    config = structlog.get_config()
+    configured = logging_config._LOGGING_CONFIGURED
+    handlers = root.handlers[:]
+    level = root.level
+    try:
+        yield
+    finally:
+        structlog.configure(**config)
+        logging_config._LOGGING_CONFIGURED = configured
+        root.handlers = handlers
+        root.setLevel(level)
+
+
+@pytest.fixture
+def python_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run the pure-Python implementations even when the Rust extension is built.
+
+    For tests that target the Python reference itself: parity tests, and tests that
+    inject a failure by patching a SciPy call the Rust kernels never make.
+    """
+    disable_native(monkeypatch)
+
+
+def disable_native(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point every dispatch module at the Python implementations."""
+    monkeypatch.setattr(compute, "_native", None)
+    monkeypatch.setattr(eto, "_native", None)
+    monkeypatch.setattr(pm_eto, "_native", None)
+    monkeypatch.setattr(fire_native, "_native", None)
+    monkeypatch.setattr(flood_native, "_native", None)
+    monkeypatch.setattr(palmer, "_native", None)
+
+
+NATIVE_PARITY_RTOL = 1e-10
+NATIVE_PARITY_ATOL = 1e-10
+
+
+class NativeRecorder:
+    """Stand-in for the Rust extension that records which kernels a run called.
+
+    Reading an attribute (a ``hasattr`` check) is not a call, so the recorded set
+    names the kernels that actually ran, not the ones a dispatch probed; the
+    recorded keyword arguments let a test assert how an input reached a kernel.
+    """
+
+    def __init__(self, module: ModuleType) -> None:
+        self._module = module
+        self.calls: set[str] = set()
+        self.arguments: dict[str, dict[str, Any]] = {}
+
+    def __getattr__(self, name: str) -> Any:
+        attribute = getattr(self._module, name)
+        if isinstance(attribute, type):
+            # the extension's exception type must stay a class for ``except``
+            return attribute
+
+        def record(*args: Any, **kwargs: Any) -> Any:
+            self.calls.add(name)
+            self.arguments[name] = kwargs
+            return attribute(*args, **kwargs)
+
+        return record
+
+
+def rust_and_python(
+    monkeypatch: pytest.MonkeyPatch, dispatch: ModuleType, run: Callable[[], Any]
+) -> tuple[Any, Any, set[str]]:
+    """Run ``run`` once through the Rust kernels behind ``dispatch`` and once on its Python path.
+
+    ``dispatch`` is the module whose ``_native`` attribute gates the kernels
+    (``climate_indices.fire._native``, ``climate_indices.flood._native``). The
+    returned calls prove the first run reached the extension, so a parity check is
+    never Python against Python.
+    """
+    recorder = NativeRecorder(import_native())
+    # the Rust kernels do not implement NumPy's floating-point reporting policies
+    with np.errstate(all="ignore"):
+        monkeypatch.setattr(dispatch, "_native", recorder)
+        rust = run()
+        monkeypatch.setattr(dispatch, "_native", None)
+        python = run()
+    return rust, python, recorder.calls
+
+
+def assert_native_parity(rust: Any, python: Any) -> None:
+    """Compare a Rust run's result with the Python run's at the parity tolerance.
+
+    A dataclass result is compared field by field, so a returned state is covered
+    as well as the values; a tuple is compared element-wise, and xarray Dataset
+    and DataArray coordinates, dimensions, and values are compared. Arrays and float scalars
+    compare with ``allclose`` and matching NaN positions, while integer arrays
+    (gap counts) and other fields (unit names)
+    compare exactly.
+    """
+    if isinstance(rust, (xr.Dataset, xr.DataArray)) or isinstance(python, (xr.Dataset, xr.DataArray)):
+        assert type(rust) is type(python)
+        xr.testing.assert_equal(rust.coords.to_dataset(), python.coords.to_dataset())
+    fields = getattr(rust, "__dataclass_fields__", None)
+    if fields is not None:
+        for name in fields:
+            assert_native_parity(getattr(rust, name), getattr(python, name))
+        return
+    if isinstance(rust, tuple):
+        assert len(rust) == len(python)
+        for rust_item, python_item in zip(rust, python, strict=True):
+            assert_native_parity(rust_item, python_item)
+        return
+    if isinstance(rust, dict):
+        # a returned fitting-parameter dict holds arrays per calendar step
+        assert isinstance(python, dict)
+        assert rust.keys() == python.keys()
+        for key in rust:
+            assert_native_parity(rust[key], python[key])
+        return
+    if rust is None or python is None:
+        assert rust is None and python is None
+        return
+    if isinstance(rust, xr.Dataset):
+        assert rust.data_vars.keys() == python.data_vars.keys()
+        for name in rust.data_vars:
+            assert_native_parity(rust[name], python[name])
+        return
+    if isinstance(rust, xr.DataArray):
+        assert rust.dims == python.dims
+        assert_native_parity(rust.values, python.values)
+        return
+    # a float scalar holds to the same tolerance as an array
+    if isinstance(rust, (np.ndarray, float, np.floating)) or isinstance(python, (np.ndarray, float, np.floating)):
+        rust_array = np.asarray(rust)
+        python_array = np.asarray(python)
+        assert rust_array.shape == python_array.shape
+        assert rust_array.dtype == python_array.dtype
+        if not np.issubdtype(rust_array.dtype, np.inexact):
+            np.testing.assert_array_equal(rust_array, python_array)
+        else:
+            np.testing.assert_allclose(
+                rust_array, python_array, rtol=NATIVE_PARITY_RTOL, atol=NATIVE_PARITY_ATOL, equal_nan=True
+            )
+        return
+    assert rust == python
+
+
+# constants
+# start and end year of the monthly precipitation, temperature, and PET datasets
+_DATA_YEAR_START_MONTHLY = 1895
+_DATA_YEAR_END_MONTHLY = 2017
+
+# start and end year of the calibration periods
+# used by SPI/SPEI Pearson calculations
+_CALIBRATION_YEAR_START_MONTHLY = 1981
+_CALIBRATION_YEAR_END_MONTHLY = 2010
+_CALIBRATION_YEAR_START_PALMER = 1931
+_CALIBRATION_YEAR_END_PALMER = 1990
+
+# start and end years relevant to the daily datasets
+_DATA_YEAR_START_DAILY = 1998
+_CALIBRATION_YEAR_START_DAILY = 1998
+_CALIBRATION_YEAR_END_DAILY = 2016
+
+# latitude value used for computing the fixture datasets (PET, Palmers)
+_LATITUDE_DEGREES = 25.2292
+
+# available water capacity value used for computing the fixture datasets (Palmers)
+_AWC_INCHES = 4.5
+
+
+@pytest.fixture(scope="module")
+def data_year_start_monthly():
+    return _DATA_YEAR_START_MONTHLY
+
+
+@pytest.fixture(scope="module")
+def data_year_end_monthly():
+    return _DATA_YEAR_END_MONTHLY
+
+
+@pytest.fixture(scope="module")
+def data_year_start_daily():
+    return _DATA_YEAR_START_DAILY
+
+
+@pytest.fixture(scope="module")
+def data_year_start_palmer():
+    return _DATA_YEAR_START_MONTHLY
+
+
+@pytest.fixture(scope="module")
+def calibration_year_start_monthly():
+    return _CALIBRATION_YEAR_START_MONTHLY
+
+
+@pytest.fixture(scope="module")
+def calibration_year_end_monthly():
+    return _CALIBRATION_YEAR_END_MONTHLY
+
+
+@pytest.fixture(scope="module")
+def calibration_year_start_daily():
+    return _CALIBRATION_YEAR_START_DAILY
+
+
+@pytest.fixture(scope="module")
+def calibration_year_start_palmer():
+    return _CALIBRATION_YEAR_START_PALMER
+
+
+@pytest.fixture(scope="module")
+def calibration_year_end_palmer():
+    return _CALIBRATION_YEAR_END_PALMER
+
+
+@pytest.fixture(scope="module")
+def calibration_year_end_daily():
+    return _CALIBRATION_YEAR_END_DAILY
+
+
+@pytest.fixture(scope="module")
+def latitude_degrees():
+    return _LATITUDE_DEGREES
+
+
+@pytest.fixture(scope="module")
+def precips_mm_monthly():
+    return np.load(os.path.join(os.path.split(__file__)[0], "fixture", "precips_mm_monthly.npy"))
+
+
+@pytest.fixture(scope="module")
+def precips_mm_daily():
+    return np.load(os.path.join(os.path.split(__file__)[0], "fixture", "precips_mm_daily.npy"))
+
+
+@pytest.fixture(scope="module")
+def transformed_pearson3():
+    return np.load(os.path.join(os.path.split(__file__)[0], "fixture", "pearson3_monthly.npy"))
+
+
+@pytest.fixture(scope="module")
+def transformed_pearson3_monthly_fullperiod():
+    return np.load(os.path.join(os.path.split(__file__)[0], "fixture", "pearson3_monthly_full.npy"))
+
+
+@pytest.fixture(scope="module")
+def gamma_monthly():
+    """
+    Array of values corresponding to the gamma fitting parameters computed
+    from the precips_mm_monthly array using an application of the gamma
+    conversion/fitting algorithm provided in compute.py.
+
+    :return:
+    """
+    return np.load(os.path.join(os.path.split(__file__)[0], "fixture", "gamma_monthly.npy"))
+
+
+@pytest.fixture(scope="module")
+def gamma_daily():
+    """
+    Array of values corresponding to the gamma fitting parameters computed
+    from the precips_mm_daily array using an application of the gamma
+    conversion/fitting algorithm provided in compute.py.
+
+    :return:
+    """
+
+    return np.load(os.path.join(os.path.split(__file__)[0], "fixture", "gamma_daily.npy"))
+
+
+@pytest.fixture(scope="module")
+def transformed_gamma_monthly():
+    """
+    Array of values corresponding to the precips_mm_monthly array, i.e. those
+    values have been transformed/fitted using an application of the gamma
+    conversion/fitting algorithm provided in compute.py.
+
+    :return:
+    """
+    return np.load(os.path.join(os.path.split(__file__)[0], "fixture", "transformed_gamma_monthly.npy"))
+
+
+@pytest.fixture(scope="module")
+def transformed_gamma_daily():
+    """
+    Array of values corresponding to the precips_mm_daily array, i.e. those
+    values have been transformed/fitted using an application of the gamma
+    conversion/fitting algorithm provided in compute.py.
+
+    :return:
+    """
+
+    return np.load(os.path.join(os.path.split(__file__)[0], "fixture", "transformed_gamma_daily.npy"))
+
+
+@pytest.fixture(scope="module")
+def pet_thornthwaite_mm():
+    return np.load(os.path.join(os.path.split(__file__)[0], "fixture", "pet_thornthwaite.npy"))
+
+
+@pytest.fixture(scope="module")
+def temps_celsius():
+    return np.load(os.path.join(os.path.split(__file__)[0], "fixture", "temp_celsius.npy"))
+
+
+@pytest.fixture(scope="module")
+def pnp_6month():
+    return np.load(os.path.join(os.path.split(__file__)[0], "fixture", "pnp_06.npy"))
+
+
+@pytest.fixture(scope="module")
+def spei_6_month_gamma():
+    return np.load(os.path.join(os.path.split(__file__)[0], "fixture", "spei_06_gamma.npy"))
+
+
+@pytest.fixture(scope="module")
+def spei_6_month_pearson3():
+    return np.load(os.path.join(os.path.split(__file__)[0], "fixture", "spei_06_pearson3.npy"))
+
+
+@pytest.fixture(scope="module")
+def spi_1_month_gamma():
+    return np.load(os.path.join(os.path.split(__file__)[0], "fixture", "spi_01_gamma.npy"))
+
+
+@pytest.fixture(scope="module")
+def spi_6_month_gamma():
+    return np.load(os.path.join(os.path.split(__file__)[0], "fixture", "spi_06_gamma.npy"))
+
+
+@pytest.fixture(scope="module")
+def spi_6_month_pearson3():
+    return np.load(os.path.join(os.path.split(__file__)[0], "fixture", "spi_06_pearson3.npy"))
+
+
+@pytest.fixture(scope="function")
+def rain_mm() -> np.ndarray:
+    return np.load(os.path.join(os.path.split(__file__)[0], "fixture", "rain_mm.npy"))
+
+
+@pytest.fixture(scope="function")
+def rain_mm_365() -> np.ndarray:
+    return np.load(os.path.join(os.path.split(__file__)[0], "fixture", "rain_mm_365.npy"))
+
+
+@pytest.fixture(scope="module")
+def rain_mm_366():
+    return np.load(os.path.join(os.path.split(__file__)[0], "fixture", "rain_mm_366.npy"))
+
+
+@pytest.fixture(scope="session")
+def palmer_awcs():
+    with open(os.path.join(os.path.split(__file__)[0], "fixture", "palmer_awc.json")) as awcfile:
+        return json.load(awcfile)
+
+
+def _palmer_division_dirs() -> tuple[str, ...]:
+    root = os.path.join(os.path.split(__file__)[0], "fixture", "palmer")
+    return tuple(os.path.join(root, name) for name in sorted(os.listdir(root)) if name.isdigit())
+
+
+@pytest.fixture(scope="session")
+def palmer_division_dirs() -> tuple[Path, ...]:
+    """Every committed climate-division fixture directory, from the one shared scan."""
+    return tuple(Path(directory) for directory in _palmer_division_dirs())
+
+
+@pytest.fixture(
+    scope="session", params=[Path(directory) for directory in _palmer_division_dirs()], ids=lambda path: path.name
+)
+def palmer_division_dir(request: pytest.FixtureRequest) -> Path:
+    """One parametrized climate-division fixture directory, for per-division tests."""
+    return request.param
+
+
+class _PalmerSweep(dict[str, tuple | Exception]):
+    """Division-keyed sweep results, re-raising a stored division failure on read.
+
+    A division that raises is recorded rather than propagated by the sweep, so
+    the remaining divisions still compute and only the tests that read the
+    failed division fail, naming it.
+    """
+
+    def __getitem__(self, division: str) -> tuple:
+        result = super().__getitem__(division)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
+@pytest.fixture(scope="session")
+def palmer_division_inputs(palmer_awcs) -> _PalmerSweep:
+    """Division-keyed ``(precips, pet, awc)``, the one loader for the division fixtures.
+
+    The Palmer sweeps, the scPDSI contract tests, and the nClimDiv comparisons all
+    read the same committed inputs, so the paths and the AWC lookup live here rather
+    than in each test module. Loading every division costs single-digit MiB, and the
+    session scope keeps it to one load per pytest session. Arrays are read-only so an
+    in-place test mutation cannot leak into the next consumer.
+
+    A division whose files or ``palmer_awc.json`` entry cannot be read is recorded as
+    that division's failure rather than aborting the session fixture, preserving the
+    sweeps' per-division isolation (PR #935 review).
+    """
+    inputs: _PalmerSweep = _PalmerSweep()
+    for directory in _palmer_division_dirs():
+        division = os.path.basename(directory)
+        try:
+            precips = np.load(os.path.join(directory, "precips.npy"))
+            pet = np.load(os.path.join(directory, "pet.npy"))
+            precips.setflags(write=False)
+            pet.setflags(write=False)
+            inputs[division] = (precips, pet, palmer_awcs[division])
+        except Exception as error:
+            failure = RuntimeError(f"failed to load Palmer fixture inputs for division {division}")
+            failure.__cause__ = error
+            inputs[division] = failure
+    return inputs
+
+
+def _palmer_sweep(
+    entry_point: str,
+    inputs: dict[str, tuple[np.ndarray, np.ndarray, float]],
+    max_workers: int | None = None,
+) -> _PalmerSweep:
+    """Run one Palmer entry point across every fixture climate division.
+
+    The session-scoped fixtures below cache the result so the 344-division
+    validation sweep runs once per entry point instead of once per consuming
+    test module (issue #909). Session scope, rather than module, is what lets
+    the three consuming modules share one sweep. Each fixture is lazy, so a run
+    touching only one entry point pays only for that sweep; any run that
+    touches a sweep computes it in full, even when only a subset of divisions
+    is selected. The cache costs ~35 MiB extra peak RSS on the sweep tests,
+    while the full validation suite peak does not increase (measured
+    305.9 -> 289.8 MiB in #909). A division failure ends only that division:
+    the sweep keeps going and the failure resurfaces where its division is
+    read, so one bad division cannot turn every consumer into a setup error.
+
+    Each division is independent, so a ``max_workers`` process pool splits the
+    sweep without changing any result (the divisions are bit-identical to a
+    serial run). ``None`` computes in this process, which is what tests that
+    monkeypatch ``palmer`` rely on.
+
+    :param entry_point: the ``palmer`` function name to run
+    :param inputs: division-keyed ``(precips, pet, awc)`` fixture inputs
+    :param max_workers: worker processes to split the divisions across, or
+        ``None`` to compute serially in this process
+    """
+    from climate_indices import palmer
+
+    entry = getattr(palmer, entry_point)
+    # spawn on every platform: fork from a pytest process that already holds dask
+    # or BLAS threads can deadlock, and the start method should not vary by OS
+    executor = (
+        ProcessPoolExecutor(max_workers, mp_context=multiprocessing.get_context("spawn")) if max_workers else None
+    )
+    outcomes: dict[str, tuple | Exception | Future] = {}
+    try:
+        for division in inputs:
+            try:
+                # indexing re-raises a stored fixture-load failure for this division
+                precips, pet, awc = inputs[division]
+                arguments = (
+                    precips,
+                    pet,
+                    awc,
+                    _DATA_YEAR_START_MONTHLY,
+                    _CALIBRATION_YEAR_START_PALMER,
+                    _CALIBRATION_YEAR_END_PALMER,
+                )
+                outcomes[division] = entry(*arguments) if executor is None else executor.submit(entry, *arguments)
+            except Exception as error:
+                outcomes[division] = _sweep_failure(entry_point, division, error)
+
+        # resolve in input order so the sweep iterates the same as a serial run
+        results: _PalmerSweep = _PalmerSweep()
+        for division, outcome in outcomes.items():
+            if isinstance(outcome, Future):
+                try:
+                    outcome = outcome.result()
+                except Exception as error:
+                    outcome = _sweep_failure(entry_point, division, error)
+            results[division] = outcome
+        return results
+    finally:
+        if executor is not None:
+            executor.shutdown()
+
+
+def _sweep_failure(entry_point: str, division: str, error: Exception) -> RuntimeError:
+    """The recorded stand-in for a division whose sweep computation raised."""
+    failure = RuntimeError(f"palmer.{entry_point}() failed for division {division}")
+    failure.__cause__ = error
+    return failure
+
+
+def _sweep_workers() -> int | None:
+    """Worker processes for the session sweeps, or ``None`` to stay serial.
+
+    An xdist worker already owns one core, so it computes serially rather than
+    nesting a process pool inside each worker.
+    """
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        return None
+    # ponytail: cap spawn workers to four; raise only if a larger pool improves sweeps without memory pressure.
+    return min(os.cpu_count() or 1, 4)
+
+
+@pytest.fixture(scope="session")
+def palmer_pdsi_results(palmer_division_inputs) -> _PalmerSweep:
+    return _palmer_sweep("pdsi", palmer_division_inputs, _sweep_workers())
+
+
+@pytest.fixture(scope="session")
+def palmer_scpdsi_results(palmer_division_inputs) -> _PalmerSweep:
+    return _palmer_sweep("scpdsi", palmer_division_inputs, _sweep_workers())
+
+
+# Hargreaves fixtures for daily evapotranspiration calculations
+# Start and end years for daily temperature data used in Hargreaves tests
+_HARGREAVES_DATA_YEAR_START = 2000
+_HARGREAVES_NUM_YEARS = 2
+
+
+@pytest.fixture(scope="module")
+def hargreaves_data_year_start():
+    return _HARGREAVES_DATA_YEAR_START
+
+
+@pytest.fixture(scope="module")
+def hargreaves_daily_tmin_celsius():
+    """
+    Daily minimum temperature fixture for Hargreaves tests.
+    Generates synthetic seasonal temperature data (2 years x 366 days).
+    Temperature varies sinusoidally between 5 and 15 degrees C.
+    """
+    num_days = _HARGREAVES_NUM_YEARS * 366
+    # create seasonal variation: cooler in winter, warmer in summer
+    day_of_year = np.tile(np.arange(1, 367), _HARGREAVES_NUM_YEARS)
+    # sinusoidal pattern: min around day 15 (Jan), max around day 196 (Jul)
+    tmin = 10.0 + 5.0 * np.sin(2 * np.pi * (day_of_year - 105) / 365)
+    return tmin[:num_days]
+
+
+@pytest.fixture(scope="module")
+def hargreaves_daily_tmax_celsius():
+    """
+    Daily maximum temperature fixture for Hargreaves tests.
+    Generates synthetic seasonal temperature data (2 years x 366 days).
+    Temperature varies sinusoidally between 15 and 30 degrees C.
+    Always higher than tmin by design.
+    """
+    num_days = _HARGREAVES_NUM_YEARS * 366
+    day_of_year = np.tile(np.arange(1, 367), _HARGREAVES_NUM_YEARS)
+    # same phase as tmin but higher base and amplitude
+    tmax = 22.5 + 7.5 * np.sin(2 * np.pi * (day_of_year - 105) / 365)
+    return tmax[:num_days]
+
+
+@pytest.fixture(scope="module")
+def hargreaves_daily_tmean_celsius():
+    """
+    Daily mean temperature fixture for Hargreaves tests.
+    Computed as midpoint between tmin and tmax fixtures.
+    """
+    num_days = _HARGREAVES_NUM_YEARS * 366
+    day_of_year = np.tile(np.arange(1, 367), _HARGREAVES_NUM_YEARS)
+    # mean is midpoint between tmin and tmax patterns
+    tmin = 10.0 + 5.0 * np.sin(2 * np.pi * (day_of_year - 105) / 365)
+    tmax = 22.5 + 7.5 * np.sin(2 * np.pi * (day_of_year - 105) / 365)
+    tmean = (tmin + tmax) / 2.0
+    return tmean[:num_days]
+
+
+@pytest.fixture(scope="module")
+def hargreaves_latitude_degrees():
+    """Latitude for Hargreaves tests (mid-latitude location)."""
+    return 35.0
+
+
+# ------------------------------------------------------------------------------
+# Literature-derived PET worked examples (issue #774). See
+# tests/fixture/pet_literature/metadata.json for full citations and derivation
+# notes.
+_PET_LITERATURE_DIR = os.path.join(os.path.split(__file__)[0], "fixture", "pet_literature")
+
+
+@pytest.fixture(scope="module")
+def thornthwaite_literature_monthly_temps_celsius():
+    return np.load(os.path.join(_PET_LITERATURE_DIR, "thornthwaite_monthly_temps_celsius.npy"))
+
+
+@pytest.fixture(scope="module")
+def thornthwaite_literature_expected_pet_mm():
+    return np.load(os.path.join(_PET_LITERATURE_DIR, "thornthwaite_expected_pet_mm.npy"))
+
+
+@pytest.fixture(scope="module")
+def hargreaves_literature_tmin_tmax_tmean_celsius():
+    return np.load(os.path.join(_PET_LITERATURE_DIR, "hargreaves_daily_tmin_tmax_tmean_celsius.npy"))
+
+
+@pytest.fixture(scope="module")
+def hargreaves_literature_expected_eto_mm_per_day():
+    return np.load(os.path.join(_PET_LITERATURE_DIR, "hargreaves_expected_eto_mm_per_day.npy"))
+
+
+# ==============================================================================
+# xarray fixtures for testing xarray-aware climate index computations
+# ==============================================================================
+
+
+@pytest.fixture(scope="session")
+def sample_monthly_precip_da() -> xr.DataArray:
+    """Create a 1D monthly precipitation DataArray (40 years, 1980-2019)."""
+    # 40 years * 12 months = 480 values
+    time = pd.date_range("1980-01-01", "2019-12-01", freq="MS")
+    # generate random precipitation values
+    rng = np.random.default_rng(42)
+    values = rng.gamma(shape=2.0, scale=50.0, size=len(time))
+
+    return xr.DataArray(
+        values,
+        coords={"time": time},
+        dims=["time"],
+        attrs={
+            "units": "mm",
+            "long_name": "Monthly Precipitation",
+        },
+    )
+
+
+@pytest.fixture(scope="session")
+def sample_daily_precip_da() -> xr.DataArray:
+    """Create a 1D daily precipitation DataArray (5 years, 2015-2019)."""
+    # 5 years of daily data
+    time = pd.date_range("2015-01-01", "2019-12-31", freq="D")
+    # generate random precipitation values
+    rng = np.random.default_rng(123)
+    values = rng.gamma(shape=2.0, scale=5.0, size=len(time))
+
+    return xr.DataArray(
+        values,
+        coords={"time": time},
+        dims=["time"],
+        attrs={
+            "units": "mm",
+            "long_name": "Daily Precipitation",
+        },
+    )
+
+
+@pytest.fixture(scope="session")
+def sample_monthly_pet_da() -> xr.DataArray:
+    """Create a 1D monthly PET DataArray matching precip fixture (40 years, 1980-2019)."""
+    # 40 years * 12 months = 480 values, matching sample_monthly_precip_da
+    time = pd.date_range("1980-01-01", "2019-12-01", freq="MS")
+    # generate random PET values (typically higher than precip)
+    rng = np.random.default_rng(100)
+    values = rng.gamma(shape=2.5, scale=60.0, size=len(time))
+
+    return xr.DataArray(
+        values,
+        coords={"time": time},
+        dims=["time"],
+        attrs={
+            "units": "mm",
+            "long_name": "Monthly Potential Evapotranspiration",
+        },
+    )
+
+
+@pytest.fixture(scope="session")
+def sample_monthly_pet_offset_da() -> xr.DataArray:
+    """
+    1D monthly PET with time offset from standard precip (1985-2024).
+    Used for testing coordinate alignment warnings.
+    40 years, 480 months, realistic PET variation.
+    """
+    rng = np.random.default_rng(101)
+    time = pd.date_range("1985-01-01", periods=480, freq="MS")
+    data = 50.0 + rng.gamma(shape=3.0, scale=20.0, size=480)
+    return xr.DataArray(
+        data,
+        coords={"time": time},
+        dims=["time"],
+        name="pet",
+        attrs={
+            "units": "mm",
+            "long_name": "Potential Evapotranspiration",
+            "standard_name": "water_potential_evaporation_amount",
+        },
+    )
+
+
+@pytest.fixture(scope="session")
+def dask_monthly_precip_1d() -> xr.DataArray:
+    """Create 1-D Dask-backed monthly precipitation DataArray (40 years, 1980-2019).
+
+    Time dimension is a single chunk (required for SPI/SPEI).
+    """
+    time = pd.date_range("1980-01-01", "2019-12-01", freq="MS")
+    rng = np.random.default_rng(42)
+    values = rng.gamma(shape=2.0, scale=50.0, size=len(time))
+
+    da = xr.DataArray(
+        values,
+        coords={"time": time},
+        dims=["time"],
+        attrs={
+            "units": "mm",
+            "long_name": "Monthly Precipitation (Dask)",
+        },
+        name="precip_dask",
+    )
+    # chunk time as single chunk (required for climate indices)
+    return da.chunk({"time": -1})
+
+
+@pytest.fixture(scope="session")
+def dask_monthly_precip_3d() -> xr.DataArray:
+    """Create 3-D Dask-backed monthly precipitation DataArray (40 years, 5 lat, 6 lon).
+
+    Time dimension is a single chunk, spatial dimensions are chunked.
+    """
+    time = pd.date_range("1980-01-01", "2019-12-01", freq="MS")
+    lat = np.linspace(30.0, 50.0, 5)
+    lon = np.linspace(-120.0, -100.0, 6)
+    rng = np.random.default_rng(99)
+    values = rng.gamma(shape=2.0, scale=50.0, size=(len(time), len(lat), len(lon)))
+
+    da = xr.DataArray(
+        values,
+        coords={"time": time, "lat": lat, "lon": lon},
+        dims=["time", "lat", "lon"],
+        attrs={
+            "units": "mm",
+            "long_name": "Gridded Precipitation (Dask)",
+        },
+        name="precip_grid_dask",
+    )
+    # chunk: single time chunk, spatial chunks
+    return da.chunk({"time": -1, "lat": 2, "lon": 3})
+
+
+@pytest.fixture(scope="session")
+def gridded_monthly_precip_3d() -> xr.DataArray:
+    """Create 3D gridded monthly precipitation DataArray (40 years, 5 lat, 6 lon).
+
+    Non-Dask eager computation version for testing gridded processing.
+    """
+    time = pd.date_range("1980-01-01", "2019-12-01", freq="MS")
+    lat = np.linspace(30.0, 50.0, 5)
+    lon = np.linspace(-120.0, -100.0, 6)
+    rng = np.random.default_rng(99)
+    values = rng.gamma(shape=2.0, scale=50.0, size=(len(time), len(lat), len(lon)))
+
+    return xr.DataArray(
+        values,
+        coords={"time": time, "lat": lat, "lon": lon},
+        dims=["time", "lat", "lon"],
+        attrs={
+            "units": "mm",
+            "long_name": "Gridded Monthly Precipitation",
+            "standard_name": "precipitation_amount",
+        },
+    )
+
+
+@pytest.fixture(scope="session")
+def single_point_monthly_da() -> xr.DataArray:
+    """Create 1D time-only monthly DataArray (40 years).
+
+    Simple time series for single-point analysis.
+    """
+    time = pd.date_range("1980-01-01", "2019-12-01", freq="MS")
+    rng = np.random.default_rng(42)
+    values = rng.gamma(shape=2.0, scale=50.0, size=len(time))
+
+    return xr.DataArray(
+        values,
+        coords={"time": time},
+        dims=["time"],
+        attrs={
+            "units": "mm",
+            "long_name": "Single Point Precipitation",
+        },
+    )
+
+
+@pytest.fixture(scope="session")
+def minimum_calibration_da() -> xr.DataArray:
+    """Create DataArray with exactly 30 years (360 months) for boundary testing.
+
+    Tests minimum calibration period requirement.
+    """
+    time = pd.date_range("1990-01-01", "2019-12-01", freq="MS")
+    rng = np.random.default_rng(42)
+    values = rng.gamma(shape=2.0, scale=50.0, size=len(time))
+
+    return xr.DataArray(
+        values,
+        coords={"time": time},
+        dims=["time"],
+        attrs={
+            "units": "mm",
+            "long_name": "Minimum Calibration Period Precipitation",
+        },
+    )
+
+
+@pytest.fixture(scope="session")
+def zero_inflated_precip_da() -> xr.DataArray:
+    """Create precipitation DataArray with ~50% zeros (arid region pattern).
+
+    Simulates arid/semi-arid climate with frequent zero-precipitation months.
+    """
+    time = pd.date_range("1980-01-01", "2019-12-01", freq="MS")
+    rng = np.random.default_rng(42)
+    # generate base values
+    values = rng.gamma(shape=2.0, scale=30.0, size=len(time))
+    # randomly set ~50% to zero
+    zero_mask = rng.random(len(time)) < 0.5
+    values[zero_mask] = 0.0
+
+    return xr.DataArray(
+        values,
+        coords={"time": time},
+        dims=["time"],
+        attrs={
+            "units": "mm",
+            "long_name": "Zero-Inflated Precipitation (Arid Region)",
+        },
+    )
+
+
+@pytest.fixture(scope="session")
+def leading_nan_block_da() -> xr.DataArray:
+    """Create DataArray with first 12 months all NaN.
+
+    Tests handling of leading missing data.
+    """
+    time = pd.date_range("1980-01-01", "2019-12-01", freq="MS")
+    rng = np.random.default_rng(42)
+    values = rng.gamma(shape=2.0, scale=50.0, size=len(time))
+    # set first year to NaN
+    values[:12] = np.nan
+
+    return xr.DataArray(
+        values,
+        coords={"time": time},
+        dims=["time"],
+        attrs={
+            "units": "mm",
+            "long_name": "Precipitation with Leading NaN Block",
+        },
+    )
+
+
+@pytest.fixture(scope="session")
+def trailing_nan_block_da() -> xr.DataArray:
+    """Create DataArray with last 12 months all NaN.
+
+    Tests handling of trailing missing data.
+    """
+    time = pd.date_range("1980-01-01", "2019-12-01", freq="MS")
+    rng = np.random.default_rng(42)
+    values = rng.gamma(shape=2.0, scale=50.0, size=len(time))
+    # set last year to NaN
+    values[-12:] = np.nan
+
+    return xr.DataArray(
+        values,
+        coords={"time": time},
+        dims=["time"],
+        attrs={
+            "units": "mm",
+            "long_name": "Precipitation with Trailing NaN Block",
+        },
+    )
+
+
+@pytest.fixture(scope="session")
+def block_nan_pattern_da() -> xr.DataArray:
+    """Create DataArray with consecutive year of NaN in middle of time series.
+
+    Tests handling of contiguous missing data blocks.
+    """
+    time = pd.date_range("1980-01-01", "2019-12-01", freq="MS")
+    rng = np.random.default_rng(42)
+    values = rng.gamma(shape=2.0, scale=50.0, size=len(time))
+    # set year 20 (months 240-251) to NaN
+    values[240:252] = np.nan
+
+    return xr.DataArray(
+        values,
+        coords={"time": time},
+        dims=["time"],
+        attrs={
+            "units": "mm",
+            "long_name": "Precipitation with Mid-Series NaN Block",
+        },
+    )
+
+
+@pytest.fixture(scope="session")
+def sample_monthly_temp_da() -> xr.DataArray:
+    """
+    Standard 1D monthly temperature DataArray for testing.
+    40 years (1980-2019), 480 months, sinusoidal seasonal pattern + noise.
+    """
+    rng = np.random.default_rng(300)
+    time = pd.date_range("1980-01-01", periods=480, freq="MS")
+    # sinusoidal seasonal pattern (warm in summer, cold in winter)
+    month_numbers = np.array([t.month for t in time])
+    seasonal_pattern = 15.0 + 10.0 * np.sin(2 * np.pi * (month_numbers - 3) / 12)
+    # add random noise
+    noise = rng.normal(0, 2.0, 480)
+    data = seasonal_pattern + noise
+    return xr.DataArray(
+        data,
+        coords={"time": time},
+        dims=["time"],
+        name="temperature",
+        attrs={
+            "units": "degC",
+            "long_name": "Monthly Temperature",
+            "standard_name": "air_temperature",
+        },
+    )
+
+
+@pytest.fixture(scope="session")
+def gridded_monthly_temp_3d() -> xr.DataArray:
+    """
+    Eager 3D monthly temperature (time, lat, lon).
+    40 years, 5 lat points, 6 lon points. Latitude-dependent offset.
+    """
+    rng = np.random.default_rng(310)
+    time = pd.date_range("1980-01-01", periods=480, freq="MS")
+    lat = np.linspace(-10.0, 10.0, 5)
+    lon = np.linspace(-15.0, 15.0, 6)
+    # create base seasonal pattern
+    month_numbers = np.array([t.month for t in time])
+    seasonal_pattern = 15.0 + 10.0 * np.sin(2 * np.pi * (month_numbers - 3) / 12)
+    # broadcast and add latitude-dependent offset (warmer at equator)
+    data = np.zeros((480, 5, 6))
+    for i, latitude in enumerate(lat):
+        lat_offset = 5.0 * (1.0 - abs(latitude) / 10.0)  # warmer near equator
+        data[:, i, :] = seasonal_pattern[:, np.newaxis] + lat_offset
+    # add random noise
+    data += rng.normal(0, 2.0, size=(480, 5, 6))
+    return xr.DataArray(
+        data,
+        coords={"time": time, "lat": lat, "lon": lon},
+        dims=["time", "lat", "lon"],
+        name="temperature",
+        attrs={
+            "units": "degC",
+            "long_name": "Monthly Temperature",
+            "standard_name": "air_temperature",
+        },
+    )
+
+
+@pytest.fixture(scope="session")
+def dask_monthly_temp_3d(gridded_monthly_temp_3d: xr.DataArray) -> xr.DataArray:
+    """
+    Dask-backed 3D monthly temperature (time, lat, lon).
+    Chunked along time dimension (full chunk = -1).
+    """
+    return gridded_monthly_temp_3d.chunk({"time": -1, "lat": 5, "lon": 6})
+
+
+@pytest.fixture(scope="session")
+def coord_rich_1d_da() -> xr.DataArray:
+    """
+    1D DataArray with rich coordinate metadata.
+
+    Features:
+    - time dimension coord with multiple attrs (axis, calendar, long_name, bounds, standard_name)
+    - month non-dimension auxiliary coord
+    - station_id scalar coord with attrs
+    """
+    time = pd.date_range("2020-01-01", "2022-12-01", freq="MS")
+    rng = np.random.default_rng(42)
+    values = rng.gamma(shape=2.0, scale=50.0, size=len(time))
+
+    month = xr.DataArray(
+        [t.month for t in time],
+        dims=["time"],
+        attrs={"long_name": "month of year", "units": "1"},
+    )
+
+    station_id = xr.DataArray(
+        "GHCN-12345",
+        attrs={"long_name": "station identifier", "cf_role": "timeseries_id"},
+    )
+
+    da = xr.DataArray(
+        values,
+        coords={
+            "time": time,
+            "month": month,
+            "station_id": station_id,
+        },
+        dims=["time"],
+        attrs={
+            "units": "mm",
+            "long_name": "Monthly Precipitation",
+        },
+        name="precip",
+    )
+
+    da.coords["time"].attrs = {
+        "axis": "T",
+        "calendar": "standard",
+        "long_name": "time",
+        "bounds": "time_bounds",
+        "standard_name": "time",
+    }
+
+    return da
+
+
+@pytest.fixture(scope="session")
+def multi_coord_da() -> xr.DataArray:
+    """
+    2D DataArray with multiple dimension coords and rich metadata.
+
+    Features:
+    - time and lat dimension coords, each with rich attrs
+    - month auxiliary coord (time-dependent)
+    - ensemble scalar coord with attrs
+    """
+    time = pd.date_range("2020-01-01", "2020-12-01", freq="MS")
+    lat = np.array([30.0, 35.0, 40.0, 45.0])
+    rng = np.random.default_rng(99)
+    values = rng.gamma(shape=2.0, scale=50.0, size=(len(time), len(lat)))
+
+    month = xr.DataArray(
+        [t.month for t in time],
+        dims=["time"],
+        attrs={"long_name": "month of year"},
+    )
+
+    ensemble = xr.DataArray(
+        "ens01",
+        attrs={"long_name": "ensemble member", "type": "hindcast"},
+    )
+
+    da = xr.DataArray(
+        values,
+        coords={
+            "time": time,
+            "lat": lat,
+            "month": month,
+            "ensemble": ensemble,
+        },
+        dims=["time", "lat"],
+        attrs={
+            "units": "mm",
+            "long_name": "Gridded Precipitation",
+        },
+        name="precip_grid",
+    )
+
+    da.coords["time"].attrs = {
+        "axis": "T",
+        "standard_name": "time",
+        "long_name": "time",
+    }
+    da.coords["lat"].attrs = {
+        "axis": "Y",
+        "standard_name": "latitude",
+        "long_name": "latitude",
+        "units": "degrees_north",
+    }
+
+    return da
+
+
+@pytest.fixture(scope="session")
+def no_time_dim_da() -> xr.DataArray:
+    """
+    DataArray without a time dimension (spatial coordinates only).
+    Used for testing validation that requires time dimension.
+    """
+    x = np.arange(10)
+    lat = np.arange(5) * 10.0
+    rng = np.random.default_rng(42)
+    values = rng.gamma(shape=2.0, scale=50.0, size=(len(x), len(lat)))
+
+    return xr.DataArray(
+        values,
+        coords={"x": x, "lat": lat},
+        dims=["x", "lat"],
+        attrs={"units": "mm"},
+    )
+
+
+@pytest.fixture(scope="session")
+def non_monotonic_time_da() -> xr.DataArray:
+    """
+    DataArray with non-monotonic (shuffled) time coordinate.
+    Used for testing time monotonicity validation.
+    """
+    time = pd.date_range("2020-01-01", "2020-12-01", freq="MS")
+    shuffled_time = time[[0, 2, 1, 3, 5, 4, 6, 8, 7, 9, 11, 10]]
+    rng = np.random.default_rng(42)
+    values = rng.gamma(shape=2.0, scale=50.0, size=len(time))
+
+    return xr.DataArray(
+        values,
+        coords={"time": shuffled_time},
+        dims=["time"],
+        attrs={"units": "mm"},
+    )
+
+
+@pytest.fixture(scope="session")
+def short_monthly_da() -> xr.DataArray:
+    """
+    Short DataArray with only 3 months (below minimum calibration period).
+    Used for testing insufficient data validation.
+    """
+    time = pd.date_range("2020-01-01", "2020-03-01", freq="MS")
+    rng = np.random.default_rng(42)
+    values = rng.gamma(shape=2.0, scale=50.0, size=len(time))
+
+    return xr.DataArray(
+        values,
+        coords={"time": time},
+        dims=["time"],
+        attrs={"units": "mm"},
+    )
+
+
+@pytest.fixture(scope="session")
+def dask_multi_time_chunk() -> xr.DataArray:
+    """
+    3D Dask-backed DataArray with time split into multiple chunks (invalid).
+    This fixture intentionally violates the chunking constraint to test validation.
+    """
+    time = pd.date_range("1980-01-01", "2019-12-01", freq="MS")
+    lat = np.linspace(30.0, 50.0, 5)
+    lon = np.linspace(-120.0, -100.0, 6)
+    rng = np.random.default_rng(99)
+    values = rng.gamma(shape=2.0, scale=50.0, size=(len(time), len(lat), len(lon)))
+
+    da = xr.DataArray(
+        values,
+        coords={"time": time, "lat": lat, "lon": lon},
+        dims=["time", "lat", "lon"],
+        attrs={"units": "mm"},
+    )
+    return da.chunk({"time": 120, "lat": 2, "lon": 3})
+
+
+@pytest.fixture(scope="session")
+def dask_monthly_pet_da() -> xr.DataArray:
+    """
+    1D Dask-backed monthly PET DataArray matching dask_monthly_precip_1d.
+    For testing multi-input functions like SPEI with Dask arrays.
+    """
+    time = pd.date_range("1980-01-01", "2019-12-01", freq="MS")
+    rng = np.random.default_rng(100)
+    values = rng.gamma(shape=2.5, scale=60.0, size=len(time))
+
+    da = xr.DataArray(
+        values,
+        coords={"time": time},
+        dims=["time"],
+        attrs={
+            "units": "mm",
+            "long_name": "Monthly PET (Dask)",
+        },
+        name="pet_dask",
+    )
+    return da.chunk({"time": -1})
+
+
+@pytest.fixture(scope="session")
+def monthly_precip_with_nan() -> xr.DataArray:
+    """
+    40-year monthly precipitation with ~10% NaN scattered throughout.
+    Used for testing NaN handling in climate index calculations.
+    """
+    time = pd.date_range("1980-01-01", "2019-12-01", freq="MS")
+    rng = np.random.default_rng(42)
+    values = rng.gamma(shape=2.0, scale=50.0, size=len(time))
+
+    nan_indices = rng.choice(len(time), size=int(len(time) * 0.1), replace=False)
+    values[nan_indices] = np.nan
+
+    return xr.DataArray(
+        values,
+        coords={"time": time},
+        dims=["time"],
+        attrs={
+            "units": "mm",
+            "long_name": "Monthly Precipitation with NaN",
+        },
+    )
+
+
+@pytest.fixture(scope="session")
+def monthly_precip_heavy_nan() -> xr.DataArray:
+    """
+    40-year monthly precipitation with ~80% NaN (insufficient data).
+    Used for testing validation that rejects insufficient non-NaN data.
+    """
+    time = pd.date_range("1980-01-01", "2019-12-01", freq="MS")
+    rng = np.random.default_rng(123)
+    values = rng.gamma(shape=2.0, scale=50.0, size=len(time))
+
+    nan_indices = rng.choice(len(time), size=int(len(time) * 0.8), replace=False)
+    values[nan_indices] = np.nan
+
+    return xr.DataArray(
+        values,
+        coords={"time": time},
+        dims=["time"],
+        attrs={
+            "units": "mm",
+            "long_name": "Monthly Precipitation with Heavy NaN",
+        },
+    )
+
+
+# ==============================================================================
+# benchmark fixtures (Story 4.8)
+# ==============================================================================
+
+
+@pytest.fixture(scope="session")
+def bench_monthly_precip_np() -> np.ndarray:
+    """40-year monthly precipitation as 2D numpy array (40, 12) for NumPy SPI path."""
+    rng = np.random.default_rng(8888)
+    return rng.gamma(shape=2.0, scale=50.0, size=(40, 12))
+
+
+@pytest.fixture(scope="session")
+def bench_monthly_precip_da() -> xr.DataArray:
+    """40-year monthly precipitation as 1D xarray DataArray for xarray SPI path."""
+    time = pd.date_range("1980-01-01", "2019-12-01", freq="MS")
+    rng = np.random.default_rng(8888)
+    values = rng.gamma(shape=2.0, scale=50.0, size=len(time))
+    return xr.DataArray(values, coords={"time": time}, dims=["time"], attrs={"units": "mm"})
+
+
+@pytest.fixture(scope="session")
+def bench_monthly_pet_np() -> np.ndarray:
+    """40-year monthly PET as 2D numpy array (40, 12) for NumPy SPEI path."""
+    rng = np.random.default_rng(9999)
+    return rng.gamma(shape=2.5, scale=60.0, size=(40, 12))
+
+
+@pytest.fixture(scope="session")
+def bench_monthly_pet_da() -> xr.DataArray:
+    """40-year monthly PET as 1D xarray DataArray for xarray SPEI path."""
+    time = pd.date_range("1980-01-01", "2019-12-01", freq="MS")
+    rng = np.random.default_rng(9999)
+    values = rng.gamma(shape=2.5, scale=60.0, size=len(time))
+    return xr.DataArray(values, coords={"time": time}, dims=["time"], attrs={"units": "mm"})
+
+
+# Whole calendar years, deliberately. The xarray daily path converts to the NumPy
+# core's 366-day layout, so a partial final year - even a four-day tail - pads to a
+# full extra 366-day year. The old 5 * 366 length ran to 2020-01-04 and so spanned
+# six years, making the xarray path compute 20% more elements than the NumPy
+# baseline it is measured against: that inflated PET Hargreaves overhead from ~60%
+# to ~85% locally and measured calendar padding rather than adapter overhead.
+_BENCH_DAILY_TIME = pd.date_range("2015-01-01", "2019-12-31", freq="D")
+
+
+@pytest.fixture(scope="session")
+def bench_monthly_temp_np() -> np.ndarray:
+    """40-year monthly temperatures as 1D numpy array for NumPy PET Thornthwaite."""
+    rng = np.random.default_rng(7777)
+    return 15.0 + 10.0 * np.sin(np.linspace(0, 80 * np.pi, 480)) + rng.normal(0, 2, 480)
+
+
+@pytest.fixture(scope="session")
+def bench_monthly_temp_da() -> xr.DataArray:
+    """40-year monthly temperatures as xarray DataArray for xarray PET Thornthwaite."""
+    time = pd.date_range("1980-01-01", "2019-12-01", freq="MS")
+    rng = np.random.default_rng(7777)
+    values = 15.0 + 10.0 * np.sin(np.linspace(0, 80 * np.pi, 480)) + rng.normal(0, 2, 480)
+    return xr.DataArray(values, coords={"time": time}, dims=["time"], attrs={"units": "degC"})
+
+
+@pytest.fixture(scope="session")
+def bench_daily_tmin_np() -> np.ndarray:
+    """5-year daily min temperature as 1D numpy for NumPy Hargreaves."""
+    rng = np.random.default_rng(6666)
+    days = len(_BENCH_DAILY_TIME)
+    day_of_year = _BENCH_DAILY_TIME.dayofyear.to_numpy()
+    return 10.0 + 5.0 * np.sin(2 * np.pi * (day_of_year - 105) / 365) + rng.normal(0, 1, days)
+
+
+@pytest.fixture(scope="session")
+def bench_daily_tmax_np() -> np.ndarray:
+    """5-year daily max temperature as 1D numpy for NumPy Hargreaves."""
+    rng = np.random.default_rng(5555)
+    days = len(_BENCH_DAILY_TIME)
+    day_of_year = _BENCH_DAILY_TIME.dayofyear.to_numpy()
+    return 22.5 + 7.5 * np.sin(2 * np.pi * (day_of_year - 105) / 365) + rng.normal(0, 1, days)
+
+
+@pytest.fixture(scope="session")
+def bench_daily_tmin_da(bench_daily_tmin_np: np.ndarray) -> xr.DataArray:
+    """5-year daily min temp as xarray DataArray for xarray Hargreaves."""
+    return xr.DataArray(bench_daily_tmin_np.copy(), coords={"time": _BENCH_DAILY_TIME}, dims=["time"])
+
+
+@pytest.fixture(scope="session")
+def bench_daily_tmax_da(bench_daily_tmax_np: np.ndarray) -> xr.DataArray:
+    """5-year daily max temp as xarray DataArray for xarray Hargreaves."""
+    return xr.DataArray(bench_daily_tmax_np.copy(), coords={"time": _BENCH_DAILY_TIME}, dims=["time"])
+
+
+@pytest.fixture(scope="session")
+def bench_gridded_precip_da() -> xr.DataArray:
+    """Medium-grid monthly precip DataArray (480 time, 20 lat, 20 lon) for gridded benchmarks."""
+    time = pd.date_range("1980-01-01", "2019-12-01", freq="MS")
+    lat = np.linspace(25.0, 50.0, 20)
+    lon = np.linspace(-125.0, -70.0, 20)
+    rng = np.random.default_rng(4444)
+    values = rng.gamma(shape=2.0, scale=50.0, size=(len(time), len(lat), len(lon)))
+    return xr.DataArray(
+        values,
+        coords={"time": time, "lat": lat, "lon": lon},
+        dims=["time", "lat", "lon"],
+        attrs={"units": "mm"},
+    )
+
+
+def assert_publish_restores_previous_set(
+    generator: ModuleType,
+    staging: Path,
+    target: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: type[BaseException],
+) -> None:
+    """Interrupt a fixture generator's staging swap and check the published set survives unchanged.
+
+    The energy generators publish a complete fixture set by swapping directories, so an
+    interrupted swap must leave the committed files exactly as they were rather than a
+    mixture of the two generations.
+    """
+    previous = {path.name: path.read_bytes() for path in target.iterdir()}
+    monkeypatch.setattr(generator, "FIXTURE_DIR", target)
+    replace = generator.os.replace
+
+    def interrupted_replace(source: Path, destination: Path) -> None:
+        if source == staging:
+            raise error("interrupted publication")
+        replace(source, destination)
+
+    monkeypatch.setattr(generator.os, "replace", interrupted_replace)
+    with pytest.raises(error, match="interrupted publication"):
+        generator._publish(staging)
+    assert {path.name: path.read_bytes() for path in target.iterdir()} == previous
+
+
+@pytest.fixture
+def icechunk_repo() -> Any:
+    """A fresh in-memory Icechunk repository, skipped without the optional extra.
+
+    In-memory storage keeps the test hermetic and needs no cleanup, which covers every
+    test except a process-based distributed write; that one uses
+    ``icechunk_repo_filesystem`` instead.
+    """
+    icechunk = pytest.importorskip("icechunk")
+    return icechunk.Repository.open_or_create(icechunk.in_memory_storage())
+
+
+@pytest.fixture
+def icechunk_repo_filesystem(tmp_path: Path) -> Any:
+    """A fresh on-disk Icechunk repository, visible to distributed worker processes."""
+    icechunk = pytest.importorskip("icechunk")
+    return icechunk.Repository.create(icechunk.local_filesystem_storage(str(tmp_path / "repository")))
+
+
+@pytest.fixture
+def dask_client() -> Iterator[Any]:
+    """A process-based distributed client for the Icechunk worker-write test."""
+    distributed = pytest.importorskip("distributed")
+    with distributed.Client(n_workers=2, threads_per_worker=1, processes=True, dashboard_address=":0") as client:
+        yield client

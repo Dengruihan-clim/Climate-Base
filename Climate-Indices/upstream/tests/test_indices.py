@@ -1,0 +1,1328 @@
+import logging
+from unittest import mock
+
+import numpy as np
+import pytest
+
+from climate_indices import compute, indices
+from climate_indices.exceptions import DataShapeError, InvalidArgumentError
+
+# disable logging messages
+logging.disable(logging.CRITICAL)
+
+UNEXPECTED_ALL_NANS_MESSAGE = "All-NaN input array does not result in the expected all-NaN result"
+
+
+@pytest.mark.usefixtures(
+    "temps_celsius",
+    "latitude_degrees",
+    "data_year_start_monthly",
+)
+def test_pet(
+    temps_celsius,
+    latitude_degrees,
+    data_year_start_monthly,
+):
+    # confirm that an input temperature array of only NaNs
+    # results in the same all NaNs array being returned
+    all_nan_temps = np.full(temps_celsius.shape, np.nan)
+    computed_pet = indices.pet(all_nan_temps, latitude_degrees, data_year_start_monthly)
+    np.testing.assert_equal(
+        computed_pet,
+        all_nan_temps,
+        UNEXPECTED_ALL_NANS_MESSAGE,
+    )
+
+    # confirm that a masked input temperature array of
+    # only NaNs results in the same masked array being returned
+    masked_all_nan_temps = np.ma.array(all_nan_temps)
+    computed_pet = indices.pet(masked_all_nan_temps, latitude_degrees, data_year_start_monthly)
+    np.testing.assert_equal(
+        computed_pet,
+        masked_all_nan_temps,
+        UNEXPECTED_ALL_NANS_MESSAGE,
+    )
+
+    # confirm that a missing/None latitude value raises an error
+    np.testing.assert_raises(ValueError, indices.pet, temps_celsius, None, data_year_start_monthly)
+
+    # confirm that a missing/None latitude value raises an error
+    np.testing.assert_raises(ValueError, indices.pet, temps_celsius, np.nan, data_year_start_monthly)
+
+    # confirm that an invalid latitude value raises an error
+    with pytest.raises(ValueError):
+        indices.pet(
+            temps_celsius,
+            91.0,  # latitude > 90 is invalid
+            data_year_start_monthly,
+        )
+
+    # confirm that an invalid latitude value raises an error
+    np.testing.assert_raises(
+        ValueError,
+        indices.pet,
+        temps_celsius,
+        -91.0,  # latitude < -90 is invalid
+        data_year_start_monthly,
+    )
+
+    # The geographic poles are valid latitude coordinates.
+    for polar_latitude in (-90.0, 90.0):
+        result = indices.pet(temps_celsius, polar_latitude, data_year_start_monthly)
+        assert result.size == temps_celsius.size
+
+    # Invalid latitude values must not bypass validation for all-NaN temperatures.
+    for invalid_latitude in (-91.0, 91.0):
+        with pytest.raises(ValueError):
+            indices.pet(all_nan_temps, invalid_latitude, data_year_start_monthly)
+
+    # compute PET from the monthly temperatures, latitude, and initial years -- if this runs without
+    # error then this test passes, as the underlying method(s) being used to compute PET will be tested
+    # in the relevant test_compute.py or test_eto.py codes
+    indices.pet(temps_celsius, latitude_degrees, data_year_start_monthly)
+
+    # compute PET from the monthly temperatures, latitude (as an array), and initial years -- if this runs without
+    # error then this test passes, as the underlying method(s) being used to compute PET will be tested
+    # in the relevant test_compute.py or test_eto.py codes
+    indices.pet(temps_celsius, np.array([latitude_degrees]), data_year_start_monthly)
+
+    # verify that 1-element array latitude produces identical results to scalar latitude
+    # this validates the removal of the size > 1 guard in indices.py:721
+    pet_scalar = indices.pet(temps_celsius, latitude_degrees, data_year_start_monthly)
+    pet_array_1elem = indices.pet(temps_celsius, np.array([latitude_degrees]), data_year_start_monthly)
+    np.testing.assert_array_equal(
+        pet_scalar,
+        pet_array_1elem,
+        err_msg="1-element array latitude should produce identical results to scalar latitude",
+    )
+
+    # confirm that an empty latitude array raises a controlled ValueError
+    with pytest.raises(ValueError, match="empty latitude array"):
+        indices.pet(temps_celsius, np.array([]), data_year_start_monthly)
+
+
+@pytest.mark.usefixtures(
+    "precips_mm_monthly",
+    "precips_mm_daily",
+    "data_year_start_monthly",
+    "data_year_start_daily",
+    "calibration_year_start_monthly",
+    "calibration_year_end_monthly",
+    "calibration_year_start_daily",
+    "calibration_year_end_daily",
+    "pnp_6month",
+)
+def test_pnp(
+    precips_mm_monthly,
+    precips_mm_daily,
+    data_year_start_monthly,
+    data_year_start_daily,
+    calibration_year_start_monthly,
+    calibration_year_end_monthly,
+    calibration_year_start_daily,
+    calibration_year_end_daily,
+    pnp_6month,
+):
+    # confirm that an input precipitation array containing
+    # only NaNs results in the same array returned
+    all_nan_precips = np.full(precips_mm_monthly.shape, np.nan)
+    computed_pnp = indices.percentage_of_normal(
+        all_nan_precips,
+        1,
+        data_year_start_monthly,
+        calibration_year_start_monthly,
+        calibration_year_end_monthly,
+        compute.Periodicity.monthly,
+    )
+    np.testing.assert_allclose(
+        computed_pnp.flatten(),
+        all_nan_precips.flatten(),
+        equal_nan=True,
+        err_msg=UNEXPECTED_ALL_NANS_MESSAGE,
+    )
+
+    # compute PNP from the daily precipitation array
+    computed_pnp_6month = indices.percentage_of_normal(
+        precips_mm_monthly.flatten(),
+        6,
+        data_year_start_monthly,
+        calibration_year_start_monthly,
+        calibration_year_end_monthly,
+        compute.Periodicity.monthly,
+    )
+
+    # confirm PNP is being computed as expected
+    np.testing.assert_allclose(
+        pnp_6month.flatten(),
+        computed_pnp_6month.flatten(),
+        atol=0.01,
+        equal_nan=True,
+        err_msg="PNP values not computed as expected",
+    )
+
+    # confirm we can compute PNP from the daily values without raising an error
+    indices.percentage_of_normal(
+        precips_mm_daily.flatten(),
+        30,
+        data_year_start_daily,
+        calibration_year_start_daily,
+        calibration_year_end_daily,
+        compute.Periodicity.daily,
+    )
+
+    # invalid periodicity argument should raise InvalidArgumentError
+    with pytest.raises(InvalidArgumentError):
+        indices.percentage_of_normal(
+            precips_mm_daily.flatten(),
+            30,
+            data_year_start_daily,
+            calibration_year_start_daily,
+            calibration_year_end_daily,
+            "unsupported_value",
+        )
+
+    # invalid scale argument should raise InvalidArgumentError
+    with pytest.raises(InvalidArgumentError):
+        indices.percentage_of_normal(
+            precips_mm_daily.flatten(),
+            -3,
+            data_year_start_daily,
+            calibration_year_start_daily,
+            calibration_year_end_daily,
+            compute.Periodicity.daily,
+        )
+    with pytest.raises(InvalidArgumentError):
+        indices.percentage_of_normal(
+            precips_mm_daily.flatten(),
+            None,
+            data_year_start_daily,
+            calibration_year_start_daily,
+            calibration_year_end_daily,
+            compute.Periodicity.daily,
+        )
+
+
+def test_pnp_calibration_period_ending_in_partial_final_year():
+    """A calibration window ending in a partial final year still averages per calendar time step."""
+    # 481 monthly values starting 1900, i.e. 40 years plus one extra month reaching into 1940
+    values = np.arange(481, dtype=float)
+
+    # the calibration period starts past the data start and ends in the partial year 1940,
+    # so the calibration window is 121 values, i.e. 10 whole years plus one month
+    computed_pnp = indices.percentage_of_normal(
+        values,
+        1,
+        1900,
+        1930,
+        1940,
+        compute.Periodicity.monthly,
+    )
+
+    # reference: per calendar time step average of the truncated calibration window
+    calibration_period_sums = values[(1930 - 1900) * 12 :]
+    averages = np.array([np.nanmean(calibration_period_sums[i::12]) for i in range(12)])
+    expected = np.full(values.shape, np.nan)
+    for i in range(values.size):
+        divisor = averages[i % 12]
+        if divisor > 0.0:
+            expected[i] = values[i] / divisor
+
+    np.testing.assert_allclose(computed_pnp, expected, equal_nan=True)
+
+
+def test_pnp_calibration_period_beyond_data_raises():
+    """A calibration window past the end of the data is rejected, not returned as all-NaN (#1230)."""
+    values = np.arange(240, dtype=float)  # 20 years of monthly values starting 1900
+
+    with pytest.raises(InvalidArgumentError, match="calibration end year"):
+        indices.percentage_of_normal(
+            values,
+            1,
+            1900,
+            1921,
+            1925,
+            compute.Periodicity.monthly,
+        )
+
+
+def test_pnp_2d_input_matches_flattened_1d():
+    """A 2-D (years, periods) input is flattened, matching the equivalent 1-D series."""
+    values = np.arange(240, dtype=float).reshape(20, 12)
+
+    computed_2d = indices.percentage_of_normal(
+        values,
+        3,
+        1900,
+        1900,
+        1919,
+        compute.Periodicity.monthly,
+    )
+    computed_1d = indices.percentage_of_normal(
+        values.flatten(),
+        3,
+        1900,
+        1900,
+        1919,
+        compute.Periodicity.monthly,
+    )
+
+    assert computed_2d.shape == computed_1d.shape
+    np.testing.assert_allclose(computed_2d, computed_1d, equal_nan=True)
+
+
+def test_pnp_3d_input_raises():
+    """An input array with more than two dimensions raises DataShapeError."""
+    values = np.zeros((2, 3, 4))
+
+    with pytest.raises(DataShapeError):
+        indices.percentage_of_normal(
+            values,
+            1,
+            1900,
+            1900,
+            1901,
+            compute.Periodicity.monthly,
+        )
+
+
+def test_spi_ambiguous_3d_input_raises():
+    """A gridded array whose first cell axis is the period length raises ValueError.
+
+    That shape is equally readable as time-major (time, 12, *cells) and as the legacy
+    (years, periods, *cells) layout, so it must be declared with spatial_time_major=True
+    instead of being silently re-read along the wrong axis (#923).
+
+    Unlike eddi()/percentage_of_normal(), spi()'s dimension errors are pinned to
+    plain ValueError by tests/test_backward_compat.py::TestErrorHierarchyDocumented,
+    so this stays on the shared preparation seam's ValueError rather than switching
+    to DataShapeError.
+    """
+    values = np.zeros((2, 12, 4))
+
+    with pytest.raises(ValueError, match="Invalid shape of input array"):
+        indices.spi(
+            values,
+            1,
+            indices.Distribution.gamma,
+            1900,
+            1900,
+            1901,
+            compute.Periodicity.monthly,
+        )
+
+
+def test_spei_ambiguous_3d_all_missing_input_raises():
+    """SPEI's all-missing shortcut must not skip the ambiguous-shape guard.
+
+    An all-NaN (time, periods, *cells) block is still ambiguous with the legacy
+    (years, periods, *cells) layout, so it raises the same ValueError SPI does
+    instead of returning the input unchanged.
+    """
+    all_nans = np.full((24, 12, 2), np.nan)
+
+    with pytest.raises(ValueError, match="Invalid shape of input array"):
+        indices.spei(
+            all_nans,
+            all_nans,
+            1,
+            indices.Distribution.gamma,
+            compute.Periodicity.monthly,
+            1900,
+            1900,
+            1901,
+        )
+
+
+@pytest.mark.parametrize(
+    ("precips", "pet"),
+    [
+        pytest.param(np.full((24, 2, 2), np.nan), np.zeros((24, 3)), id="spatial"),
+        pytest.param(np.full(240, np.nan), np.zeros(120), id="series"),
+    ],
+)
+def test_spei_incompatible_pet_raises_even_when_precipitation_all_missing(precips, pet):
+    """The PET compatibility check runs before the all-missing shortcut."""
+    with pytest.raises(ValueError, match="Incompatible precipitation and PET arrays"):
+        indices.spei(
+            precips,
+            pet,
+            1,
+            indices.Distribution.gamma,
+            compute.Periodicity.monthly,
+            1900,
+            1900,
+            1901,
+        )
+
+
+def test_spei_all_missing_pet_keeps_the_cell_axes():
+    """An all-NaN PET block still returns the precipitation input's layout."""
+    precips = np.random.default_rng(0).uniform(0.0, 100.0, (480, 3, 2))
+    pet = np.full((480, 3, 2), np.nan)
+
+    result = indices.spei(
+        precips,
+        pet,
+        1,
+        indices.Distribution.gamma,
+        compute.Periodicity.monthly,
+        1900,
+        1900,
+        1901,
+    )
+
+    assert result.shape == precips.shape
+    assert np.all(np.isnan(result))
+
+
+@pytest.mark.parametrize(
+    ("shape", "spatial_time_major"),
+    [pytest.param((24,), False, id="series"), pytest.param((24, 3, 2), True, id="spatial-block")],
+)
+def test_partially_missing_all_nan_sums_unfold_to_the_input_layout(shape, spatial_time_major):
+    """A partially missing series whose scaled windows are all NaN still unfolds.
+
+    The all-missing short-circuit must be decided on the input, not on the scaled
+    block: a block whose every sliding window contains one missing step is all NaN
+    after scaling but is not an all-missing input, so it must return the caller's
+    layout rather than the folded (years, periods, *cells) array.
+    """
+    values = np.ones(shape)
+    values[0::3] = np.nan
+
+    result = indices.spi(
+        values,
+        3,
+        indices.Distribution.gamma,
+        1900,
+        1900,
+        1901,
+        compute.Periodicity.monthly,
+        spatial_time_major=spatial_time_major,
+    )
+
+    assert result.shape == values.shape
+    assert np.all(np.isnan(result))
+
+
+@pytest.mark.usefixtures(
+    "precips_mm_monthly",
+    "precips_mm_daily",
+    "data_year_start_monthly",
+    "data_year_end_monthly",
+    "data_year_start_daily",
+    "calibration_year_start_monthly",
+    "calibration_year_end_monthly",
+    "calibration_year_start_daily",
+    "calibration_year_end_daily",
+    "spi_1_month_gamma",
+    "spi_6_month_gamma",
+    "spi_6_month_pearson3",
+)
+def test_spi(
+    precips_mm_monthly,
+    precips_mm_daily,
+    data_year_start_monthly,
+    data_year_end_monthly,
+    data_year_start_daily,
+    calibration_year_start_monthly,
+    calibration_year_end_monthly,
+    calibration_year_start_daily,
+    calibration_year_end_daily,
+    spi_1_month_gamma,
+    spi_6_month_gamma,
+    spi_6_month_pearson3,
+) -> None:
+    # confirm that an input array of all NaNs for
+    # precipitation results in the same array returned
+    all_nans = np.full(precips_mm_monthly.shape, np.nan)
+    computed_spi = indices.spi(
+        all_nans,
+        1,
+        indices.Distribution.gamma,
+        data_year_start_monthly,
+        data_year_start_monthly,
+        data_year_end_monthly,
+        compute.Periodicity.monthly,
+    )
+    np.testing.assert_allclose(
+        computed_spi,
+        all_nans.flatten(),
+        equal_nan=True,
+        err_msg="SPI/Gamma not handling all-NaN arrays as expected",
+    )
+
+    # confirm SPI/gamma is being computed as expected
+    computed_spi = indices.spi(
+        precips_mm_monthly,
+        1,
+        indices.Distribution.gamma,
+        data_year_start_monthly,
+        data_year_start_monthly,
+        data_year_end_monthly,
+        compute.Periodicity.monthly,
+    )
+    np.testing.assert_allclose(
+        computed_spi,
+        spi_1_month_gamma,
+        atol=0.001,
+        err_msg="SPI/Gamma values for 1-month scale not computed as expected",
+    )
+
+    # confirm SPI/gamma is being computed as expected
+    computed_spi = indices.spi(
+        precips_mm_monthly.flatten(),
+        6,
+        indices.Distribution.gamma,
+        data_year_start_monthly,
+        data_year_start_monthly,
+        data_year_end_monthly,
+        compute.Periodicity.monthly,
+    )
+
+    # confirm SPI/gamma is being computed as expected
+    np.testing.assert_allclose(
+        computed_spi,
+        spi_6_month_gamma,
+        atol=0.001,
+        err_msg="SPI/Gamma values for 6-month scale not computed as expected",
+    )
+
+    # confirm we can also call the function with daily data,
+    # if this completes without error then test passes
+    indices.spi(
+        precips_mm_daily,
+        30,
+        indices.Distribution.gamma,
+        data_year_start_daily,
+        calibration_year_start_daily,
+        calibration_year_end_daily,
+        compute.Periodicity.daily,
+    )
+
+    # invalid periodicity argument should raise InvalidArgumentError
+    with pytest.raises(InvalidArgumentError):
+        indices.spi(
+            precips_mm_monthly.flatten(),
+            6,
+            indices.Distribution.gamma,
+            data_year_start_monthly,
+            data_year_start_monthly,
+            data_year_end_monthly,
+            "unsupported_value",
+        )
+
+    # invalid distribution argument should raise InvalidArgumentError
+    with pytest.raises(InvalidArgumentError):
+        indices.spi(
+            precips_mm_monthly.flatten(),
+            6,
+            None,
+            data_year_start_monthly,
+            data_year_start_monthly,
+            data_year_end_monthly,
+            compute.Periodicity.monthly,
+        )
+
+    # a gridded array whose first cell axis is the period length is ambiguous with a
+    # (years, periods, *cells) array, so it has to be declared rather than read
+    np.testing.assert_raises(
+        ValueError,
+        indices.spi,
+        np.array(np.zeros((4, 366, 8))),
+        6,
+        indices.Distribution.gamma,
+        data_year_start_monthly,
+        data_year_start_monthly,
+        data_year_end_monthly,
+        compute.Periodicity.daily,
+    )
+
+    # compute SPI/Pearson at 60-day scale, just make sure it completes without error
+    # TODO compare against expected results
+    indices.spi(
+        precips_mm_daily.flatten(),
+        60,
+        indices.Distribution.pearson,
+        data_year_start_daily,
+        calibration_year_start_daily,
+        calibration_year_end_daily,
+        compute.Periodicity.daily,
+    )
+
+    # confirm SPI/Pearson is being computed as expected
+    computed_spi = indices.spi(
+        precips_mm_monthly.flatten(),
+        6,
+        indices.Distribution.pearson,
+        data_year_start_monthly,
+        calibration_year_start_monthly,
+        calibration_year_end_monthly,
+        compute.Periodicity.monthly,
+    )
+    np.testing.assert_allclose(
+        computed_spi,
+        spi_6_month_pearson3,
+        atol=0.01,
+        err_msg="SPI/Pearson values for 6-month scale not computed as expected",
+    )
+
+    # confirm we can compute from daily values without raising an error
+    indices.spi(
+        precips_mm_daily.flatten(),
+        60,
+        indices.Distribution.pearson,
+        data_year_start_daily,
+        calibration_year_start_daily,
+        calibration_year_end_daily,
+        compute.Periodicity.daily,
+    )
+
+    # invalid periodicity argument should raise InvalidArgumentError
+    with pytest.raises(InvalidArgumentError):
+        indices.spi(
+            precips_mm_monthly.flatten(),
+            6,
+            indices.Distribution.pearson,
+            data_year_start_monthly,
+            calibration_year_start_monthly,
+            calibration_year_end_monthly,
+            "unsupported_value",
+        )
+
+
+def test_masked_array_edge_cases(
+    precips_mm_monthly,
+    data_year_start_monthly,
+    data_year_end_monthly,
+) -> None:
+    """
+    Test MaskedArray edge cases to validate the isinstance(x, np.ma.MaskedArray)
+    and x.mask.all() pattern used throughout the codebase.
+
+    Tests three scenarios:
+    (a) MaskedArray with mask=False (no values masked)
+    (b) MaskedArray with partial mask (some values masked)
+    (c) MaskedArray with full mask (all values masked)
+    """
+    # setup: create test data
+    scale = 6
+    distribution = indices.Distribution.gamma
+    periodicity = compute.Periodicity.monthly
+
+    # (a) MaskedArray with mask=False - should work normally
+    masked_no_mask = np.ma.array(precips_mm_monthly, mask=False)
+    result_no_mask = indices.spi(
+        masked_no_mask,
+        scale,
+        distribution,
+        data_year_start_monthly,
+        data_year_start_monthly,
+        data_year_end_monthly,
+        periodicity,
+    )
+    # should produce valid results (not all NaN)
+    assert not np.all(np.isnan(result_no_mask)), "MaskedArray with mask=False should produce valid results"
+
+    # (b) MaskedArray with partial mask - should handle partially masked data
+    partial_mask = np.zeros(precips_mm_monthly.shape, dtype=bool)
+    # mask the first 10% of values
+    mask_count = max(1, precips_mm_monthly.size // 10)
+    partial_mask.flat[:mask_count] = True
+    masked_partial = np.ma.array(precips_mm_monthly, mask=partial_mask)
+    result_partial = indices.spi(
+        masked_partial,
+        scale,
+        distribution,
+        data_year_start_monthly,
+        data_year_start_monthly,
+        data_year_end_monthly,
+        periodicity,
+    )
+    # should produce results with some valid values (not all NaN)
+    assert not np.all(np.isnan(result_partial)), "MaskedArray with partial mask should produce some valid results"
+    # some values may be NaN due to masking
+    assert result_partial.size > 0, "Result should have non-zero size"
+
+    # (c) MaskedArray with full mask - should return quickly without computation
+    masked_full = np.ma.array(precips_mm_monthly, mask=True)
+    result_full = indices.spi(
+        masked_full,
+        scale,
+        distribution,
+        data_year_start_monthly,
+        data_year_start_monthly,
+        data_year_end_monthly,
+        periodicity,
+    )
+    # should return all NaN or all masked
+    assert np.all(np.isnan(result_full)) or (isinstance(result_full, np.ma.MaskedArray) and result_full.mask.all()), (
+        "MaskedArray with full mask should return all NaN or fully masked result"
+    )
+
+    # also test a compute function directly: transform_fitted_gamma
+    # this validates the pattern at the compute module level, on 30 years of
+    # monthly values so that every calendar month can be fitted
+    test_values = np.random.default_rng(3).gamma(2.0, 30.0, size=360)
+    plain_result = compute.transform_fitted_gamma(test_values, 1900, 1900, 1929, compute.Periodicity.monthly)
+
+    # (a) no mask: a mask marks missing values, so an empty one changes nothing
+    masked_values_no_mask = np.ma.array(test_values, mask=False)
+    result_compute_no_mask = compute.transform_fitted_gamma(
+        masked_values_no_mask,
+        1900,  # data_start_year
+        1900,  # calibration_start_year
+        1929,  # calibration_end_year
+        compute.Periodicity.monthly,
+    )
+    assert not np.all(np.isnan(result_compute_no_mask)), (
+        "compute.transform_fitted_gamma with mask=False should produce valid results"
+    )
+    np.testing.assert_array_equal(result_compute_no_mask, plain_result)
+
+    # (b) partial mask: a masked value is missing, as a NaN in its place is
+    masked_values_partial = np.ma.array(test_values, mask=np.arange(test_values.size) % 7 == 0)
+    np.testing.assert_array_equal(
+        compute.transform_fitted_gamma(masked_values_partial, 1900, 1900, 1929, compute.Periodicity.monthly),
+        compute.transform_fitted_gamma(
+            np.ma.filled(masked_values_partial, np.nan), 1900, 1900, 1929, compute.Periodicity.monthly
+        ),
+    )
+
+    # (c) full mask - should trigger early return
+    masked_values_full = np.ma.array(test_values, mask=True)
+    result_compute_full = compute.transform_fitted_gamma(
+        masked_values_full,
+        1900,
+        1900,
+        1901,
+        compute.Periodicity.monthly,
+    )
+    # should return the input masked array (early return)
+    np.testing.assert_array_equal(
+        result_compute_full,
+        masked_values_full,
+        err_msg="compute.transform_fitted_gamma should return input when fully masked",
+    )
+
+
+@pytest.mark.usefixtures(
+    "precips_mm_monthly",
+    "pet_thornthwaite_mm",
+    "data_year_start_monthly",
+    "data_year_end_monthly",
+    "spei_6_month_gamma",
+    "spei_6_month_pearson3",
+)
+def test_spei(
+    precips_mm_monthly,
+    pet_thornthwaite_mm,
+    data_year_start_monthly,
+    data_year_end_monthly,
+    spei_6_month_gamma,
+    spei_6_month_pearson3,
+) -> None:
+    # confirm that an input precipitation array containing
+    # only NaNs results in the same array being returned
+    all_nans = np.full(precips_mm_monthly.shape, np.nan)
+    computed_spei = indices.spei(
+        all_nans,
+        all_nans,
+        1,
+        indices.Distribution.gamma,
+        compute.Periodicity.monthly,
+        data_year_start_monthly,
+        data_year_start_monthly,
+        data_year_end_monthly,
+        {"alpha": None, "beta": None},
+    )
+    np.testing.assert_allclose(
+        computed_spei,
+        all_nans.flatten(),
+        equal_nan=True,
+        err_msg="SPEI/Gamma not handling all-NaN arrays as expected",
+    )
+
+    # compute SPEI/gamma at 6-month scale
+    computed_spei = indices.spei(
+        precips_mm_monthly,
+        pet_thornthwaite_mm,
+        6,
+        indices.Distribution.gamma,
+        compute.Periodicity.monthly,
+        data_year_start_monthly,
+        data_year_start_monthly,
+        data_year_end_monthly,
+        # Deprecated fitting keys
+        {"alphas": None, "betas": None},
+    )
+
+    # confirm SPEI/gamma is being computed as expected
+    np.testing.assert_allclose(
+        computed_spei,
+        spei_6_month_gamma,
+        atol=0.01,
+        err_msg="SPEI/Gamma values for 6-month scale not computed as expected",
+    )
+
+    # compute SPEI/Pearson at 6-month scale
+    computed_spei = indices.spei(
+        precips_mm_monthly,
+        pet_thornthwaite_mm,
+        6,
+        indices.Distribution.pearson,
+        compute.Periodicity.monthly,
+        data_year_start_monthly,
+        data_year_start_monthly,
+        data_year_end_monthly,
+        # Deprecated fitting keys
+        {"probabilities_of_zero": None, "locs": None, "scales": None, "skews": None},
+    )
+
+    # confirm SPEI/Pearson is being computed as expected
+    np.testing.assert_allclose(
+        computed_spei,
+        spei_6_month_pearson3,
+        atol=0.01,
+        err_msg="SPEI/Pearson values for 6-month scale not computed as expected",
+    )
+
+    # invalid periodicity argument should raise InvalidArgumentError
+    with pytest.raises(InvalidArgumentError):
+        indices.spei(
+            precips_mm_monthly,
+            pet_thornthwaite_mm,
+            6,
+            indices.Distribution.pearson,
+            "unsupported_value",
+            data_year_start_monthly,
+            data_year_start_monthly,
+            data_year_end_monthly,
+        )
+
+    # having both precipitation and PET input array arguments
+    # with incongruent dimensions should raise a ValueError
+    np.testing.assert_raises(
+        ValueError,
+        indices.spei,
+        precips_mm_monthly,
+        np.array((200, 200), dtype=float),
+        6,
+        indices.Distribution.pearson,
+        compute.Periodicity.monthly,
+        data_year_start_monthly,
+        data_year_start_monthly,
+        data_year_end_monthly,
+    )
+
+
+@pytest.mark.usefixtures(
+    "rain_mm",
+    "rain_mm_365",
+    "rain_mm_366",
+)
+def test_pci(
+    rain_mm,
+    rain_mm_365,
+    rain_mm_366,
+):
+    # confirm that an input rainfall array of only NaNs
+    # results in the same all NaNs array being returned
+    all_nan_rainfall = np.full(rain_mm.shape, np.nan)
+    computed_pci = indices.pci(all_nan_rainfall)
+    np.testing.assert_equal(
+        computed_pci,
+        all_nan_rainfall,
+        UNEXPECTED_ALL_NANS_MESSAGE,
+    )
+
+    # confirm that a masked input rainfall array of
+    # only NaNs results in the same masked array being returned
+    masked_all_nan_rainfall = np.ma.array(all_nan_rainfall)
+    computed_pci = indices.pci(masked_all_nan_rainfall)
+    np.testing.assert_equal(
+        computed_pci,
+        masked_all_nan_rainfall,
+        "All-NaN masked input array does not result in the expected all-NaN masked result",
+    )
+
+    # Compute PCI for 366 days
+    indices.pci(rain_mm_366[0])
+
+    # Compute PCI for 365 days
+    indices.pci(rain_mm_365[0])
+
+    # confirm that an invalid number of days raises an error
+    np.testing.assert_raises(InvalidArgumentError, indices.pci, np.array(list(range(300))))
+
+
+@pytest.mark.usefixtures(
+    "precips_mm_monthly",
+    "pet_thornthwaite_mm",
+    "data_year_start_monthly",
+    "calibration_year_start_monthly",
+    "calibration_year_end_monthly",
+)
+def test_fitting_indices_share_one_preparation_seam(
+    precips_mm_monthly,
+    pet_thornthwaite_mm,
+    data_year_start_monthly,
+    calibration_year_start_monthly,
+    calibration_year_end_monthly,
+):
+    """SPI, SPEI, EDDI, and PNP all prepare their scaled values through one seam."""
+    precips = precips_mm_monthly.flatten()
+    pet = pet_thornthwaite_mm.flatten()
+
+    with mock.patch.object(compute, "prepare_scaled", wraps=compute.prepare_scaled) as prepare_scaled:
+        indices.spi(
+            precips,
+            3,
+            indices.Distribution.gamma,
+            data_year_start_monthly,
+            calibration_year_start_monthly,
+            calibration_year_end_monthly,
+            compute.Periodicity.monthly,
+        )
+        indices.spei(
+            precips,
+            pet,
+            3,
+            indices.Distribution.gamma,
+            compute.Periodicity.monthly,
+            data_year_start_monthly,
+            calibration_year_start_monthly,
+            calibration_year_end_monthly,
+        )
+        indices.eddi(
+            pet_thornthwaite_mm,
+            3,
+            data_year_start_monthly,
+            calibration_year_start_monthly,
+            calibration_year_end_monthly,
+            compute.Periodicity.monthly,
+        )
+        indices.percentage_of_normal(
+            precips,
+            3,
+            data_year_start_monthly,
+            calibration_year_start_monthly,
+            calibration_year_end_monthly,
+            compute.Periodicity.monthly,
+        )
+
+    # The shared pipeline states the clipping policy for SPI and SPEI, EDDI prepares
+    # with the defaults, and PNP still declines both clipping and reshaping. The
+    # spatial-block declaration is not part of that contract, so only those two
+    # keywords are compared.
+    assert prepare_scaled.call_count == 4
+    prep_kwargs = [
+        {key: value for key, value in call.kwargs.items() if key in {"clip_negatives", "reshape"}}
+        for call in prepare_scaled.call_args_list
+    ]
+    assert prep_kwargs == [
+        {"clip_negatives": True},
+        {"clip_negatives": False},
+        {},
+        {"clip_negatives": False, "reshape": False},
+    ]
+
+
+def test_fitting_indices_share_one_fit_seam(
+    precips_mm_monthly,
+    pet_thornthwaite_mm,
+    data_year_start_monthly,
+    calibration_year_start_monthly,
+    calibration_year_end_monthly,
+):
+    """SPI and SPEI both fit and standardize through one seam, stating the fall-back policy."""
+    precips = precips_mm_monthly.flatten()
+    pet = pet_thornthwaite_mm.flatten()
+
+    with mock.patch.object(compute, "fit_and_standardize", wraps=compute.fit_and_standardize) as fit_and_standardize:
+        indices.spi(
+            precips,
+            3,
+            indices.Distribution.gamma,
+            data_year_start_monthly,
+            calibration_year_start_monthly,
+            calibration_year_end_monthly,
+            compute.Periodicity.monthly,
+        )
+        indices.spei(
+            precips,
+            pet,
+            3,
+            indices.Distribution.gamma,
+            compute.Periodicity.monthly,
+            data_year_start_monthly,
+            calibration_year_start_monthly,
+            calibration_year_end_monthly,
+        )
+
+    assert fit_and_standardize.call_count == 2
+    # SPI falls back from a failed Pearson Type III fit to gamma, SPEI does not
+    assert [call.kwargs["fallback_to_gamma"] for call in fit_and_standardize.call_args_list] == [
+        True,
+        False,
+    ]
+
+
+def test_spi_accepts_deprecated_fitting_parameter_keys(
+    precips_mm_monthly,
+    data_year_start_monthly,
+    calibration_year_start_monthly,
+    calibration_year_end_monthly,
+):
+    """SPI normalizes its fitting parameters through the shared seam, so the deprecated
+    aliases that SPEI accepts work here too, and the parameters given are the ones used."""
+    precips = precips_mm_monthly.flatten()
+    parameters = (
+        (
+            indices.Distribution.gamma,
+            {"alpha": np.full(12, 4.0), "beta": np.full(12, 8.0)},
+            {"alphas": np.full(12, 4.0), "betas": np.full(12, 8.0)},
+        ),
+        (
+            indices.Distribution.pearson,
+            {
+                "prob_zero": np.full(12, 0.1),
+                "loc": np.full(12, 1.0),
+                "scale": np.full(12, 2.0),
+                "skew": np.full(12, 0.5),
+            },
+            {
+                "probabilities_of_zero": np.full(12, 0.1),
+                "locs": np.full(12, 1.0),
+                "scales": np.full(12, 2.0),
+                "skews": np.full(12, 0.5),
+            },
+        ),
+    )
+
+    for distribution, canonical, deprecated in parameters:
+        computed = [
+            indices.spi(
+                precips,
+                6,
+                distribution,
+                data_year_start_monthly,
+                calibration_year_start_monthly,
+                calibration_year_end_monthly,
+                compute.Periodicity.monthly,
+                fitting_params,
+            )
+            for fitting_params in (canonical, deprecated)
+        ]
+        np.testing.assert_array_equal(computed[0], computed[1])
+
+        # the supplied parameters are the ones used, rather than refitted from the data
+        refitted = indices.spi(
+            precips,
+            6,
+            distribution,
+            data_year_start_monthly,
+            calibration_year_start_monthly,
+            calibration_year_end_monthly,
+            compute.Periodicity.monthly,
+        )
+        assert not np.array_equal(computed[0], refitted, equal_nan=True)
+
+
+def test_spei_accepts_explicit_none_fitting_parameters(
+    precips_mm_monthly,
+    pet_thornthwaite_mm,
+    data_year_start_monthly,
+    calibration_year_start_monthly,
+    calibration_year_end_monthly,
+):
+    """An explicit None for a canonical fitting-parameter key means "fit it from the
+    data" rather than dropping the key, which used to raise KeyError."""
+    precips = precips_mm_monthly.flatten()
+    pet = pet_thornthwaite_mm.flatten()
+    with_explicit_none = indices.spei(
+        precips,
+        pet,
+        6,
+        indices.Distribution.gamma,
+        compute.Periodicity.monthly,
+        data_year_start_monthly,
+        calibration_year_start_monthly,
+        calibration_year_end_monthly,
+        {"alpha": None, "beta": None},
+    )
+    without_parameters = indices.spei(
+        precips,
+        pet,
+        6,
+        indices.Distribution.gamma,
+        compute.Periodicity.monthly,
+        data_year_start_monthly,
+        calibration_year_start_monthly,
+        calibration_year_end_monthly,
+    )
+    np.testing.assert_array_equal(with_explicit_none, without_parameters)
+
+
+def test_spatial_pearson_deprecated_fitting_keys_warn_once(
+    precips_mm_monthly,
+    data_year_start_monthly,
+    calibration_year_start_monthly,
+    calibration_year_end_monthly,
+):
+    """A deprecated fitting-parameter key warns once per top-level spatial operation,
+    not once for every cell the Pearson Type III dispatch fits."""
+    block = np.asarray(precips_mm_monthly).reshape(-1, 1, 1) * np.ones((1, 3, 2))
+    deprecated = {"probabilities_of_zero": None, "locs": None, "scales": None, "skews": None}
+
+    with mock.patch.object(compute, "_logger") as warning_logger:
+        indices.spi(
+            block,
+            6,
+            indices.Distribution.pearson,
+            data_year_start_monthly,
+            calibration_year_start_monthly,
+            calibration_year_end_monthly,
+            compute.Periodicity.monthly,
+            deprecated,
+            spatial_time_major=True,
+        )
+    assert warning_logger.warning.call_count == len(deprecated)
+
+    with mock.patch.object(compute, "_logger") as warning_logger:
+        indices.spei(
+            block,
+            np.full_like(block, 10.0),
+            6,
+            indices.Distribution.pearson,
+            compute.Periodicity.monthly,
+            data_year_start_monthly,
+            calibration_year_start_monthly,
+            calibration_year_end_monthly,
+            deprecated,
+            spatial_time_major=True,
+        )
+    assert warning_logger.warning.call_count == len(deprecated)
+
+
+@pytest.mark.usefixtures(
+    "data_year_start_monthly",
+    "calibration_year_start_monthly",
+    "calibration_year_end_monthly",
+)
+def test_supplied_fitting_params_reproduce_the_inline_fit(
+    precips_mm_monthly,
+    data_year_start_monthly,
+    calibration_year_start_monthly,
+    calibration_year_end_monthly,
+):
+    """
+    Supplying fitting parameters gives the same values as fitting inline.
+
+    Computing the scaled values' fitting parameters once and handing them back to
+    indices.spi() is the supported replacement for the legacy spi script's
+    --save_params / --load_params distribution fitting cache (#957).
+    """
+    scale = 3
+    periodicity = compute.Periodicity.monthly
+    values = precips_mm_monthly.flatten()
+    kwargs = {
+        "scale": scale,
+        "data_start_year": data_year_start_monthly,
+        "calibration_year_initial": calibration_year_start_monthly,
+        "calibration_year_final": calibration_year_end_monthly,
+        "periodicity": periodicity,
+    }
+
+    def gamma_parameters(scaled_values):
+        alphas, betas = compute.gamma_parameters(
+            scaled_values,
+            data_year_start_monthly,
+            calibration_year_start_monthly,
+            calibration_year_end_monthly,
+            periodicity,
+        )
+        return {"alpha": alphas, "beta": betas}
+
+    scaled = compute.prepare_scaled(values, scale, periodicity)
+    prob_zero, locs, scales, skews = compute.pearson_parameters(
+        scaled,
+        data_year_start_monthly,
+        calibration_year_start_monthly,
+        calibration_year_end_monthly,
+        periodicity,
+    )
+    for distribution, fitting_params, fitter in (
+        (indices.Distribution.gamma, gamma_parameters(scaled), "gamma_parameters"),
+        (
+            indices.Distribution.pearson,
+            {"prob_zero": prob_zero, "loc": locs, "scale": scales, "skew": skews},
+            "pearson_parameters",
+        ),
+    ):
+        inline = indices.spi(values, distribution=distribution, **kwargs)
+
+        # the supplied parameters are used as given, rather than refitted, so a call
+        # that quietly ignored them cannot make this comparison hold by construction
+        with mock.patch.object(compute, fitter, side_effect=AssertionError(f"unexpected {fitter} call")):
+            supplied = indices.spi(values, distribution=distribution, fitting_params=fitting_params, **kwargs)
+
+        np.testing.assert_allclose(supplied, inline, equal_nan=True)
+
+    # a time-major grid carries one period-by-cell parameter array per cell, and the
+    # cells carry distinct series so that a parameter array sliced to the wrong cell
+    # shows up as a mismatch rather than cancelling out
+    cells = (values, np.roll(values, 7) * 1.2, np.roll(values, 13) * 0.8, values[::-1])
+    grid = np.stack(cells, axis=-1).reshape(len(values), 2, 2)
+    grid_kwargs = dict(kwargs, spatial_time_major=True)
+    scaled_grid = compute.prepare_scaled(grid, scale, periodicity, spatial_time_major=True)
+    grid_params = gamma_parameters(scaled_grid)
+    assert grid_params["alpha"].shape == grid_params["beta"].shape == (12, 2, 2)
+    inline_grid = indices.spi(grid, distribution=indices.Distribution.gamma, **grid_kwargs)
+    np.testing.assert_allclose(
+        indices.spi(grid, distribution=indices.Distribution.gamma, fitting_params=grid_params, **grid_kwargs),
+        inline_grid,
+        equal_nan=True,
+    )
+
+    # the comparison above is only meaningful if a misaligned parameter array changes
+    # the result, which requires the grid's cells to have distinct fits
+    misaligned = {key: value[:, :, ::-1].copy() for key, value in grid_params.items()}
+    assert not np.allclose(
+        indices.spi(grid, distribution=indices.Distribution.gamma, fitting_params=misaligned, **grid_kwargs),
+        inline_grid,
+        equal_nan=True,
+    )
+
+
+def test_spi_pearson_keeps_a_series_that_is_more_than_half_missing():
+    """
+    A single series with more than half of its values missing is fitted with Pearson
+    rather than tripping the gamma fall back on the missing input alone (#1118).
+    """
+    values = np.random.default_rng(7).gamma(2.0, 2.0, 480)
+    values[:288] = np.nan
+    args = (1, indices.Distribution.pearson, 1980, 1981, 2010, compute.Periodicity.monthly)
+
+    pearson = indices.spi(values, *args)
+    gamma = indices.spi(values, 1, indices.Distribution.gamma, 1980, 1981, 2010, compute.Periodicity.monthly)
+
+    assert np.count_nonzero(np.isfinite(pearson)) == np.count_nonzero(np.isfinite(values))
+    # the values are Pearson's, not the fall back's
+    assert not np.allclose(pearson, gamma, equal_nan=True)
+
+
+def test_fit_diagnostics_scales_before_fitting():
+    """``indices.fit_diagnostics`` diagnoses the scaled series, matching ``compute`` on it."""
+    values = np.arange(1.0, 481.0)
+
+    diagnostics = indices.fit_diagnostics(
+        values, 3, indices.Distribution.gamma, 1981, 1981, 2010, compute.Periodicity.monthly
+    )
+    scaled = compute.prepare_scaled(values, 3, compute.Periodicity.monthly)
+    expected = compute.fit_diagnostics(
+        scaled,
+        indices.Distribution.gamma,
+        1981,
+        1981,
+        2010,
+        compute.Periodicity.monthly,
+        fallback_to_gamma=True,
+    )
+
+    assert diagnostics.n_valid.shape == (12,)
+    np.testing.assert_array_equal(diagnostics.ks_statistic, expected.ks_statistic)
+    np.testing.assert_array_equal(diagnostics.parameters["alpha"], expected.parameters["alpha"])
+
+
+@pytest.mark.parametrize("distribution", [indices.Distribution.gamma, indices.Distribution.pearson])
+@pytest.mark.parametrize("spatial", [False, True])
+def test_fit_diagnostics_mean_parameters_reproduce_inline_fit(distribution, spatial):
+    """Mean-window parameters reproduce the inline fit without being fitted again."""
+    values = np.random.default_rng(7).gamma(2.0, 2.0, (480, 2, 3) if spatial else 480)
+    args = (3, distribution, 1980, 1981, 2010, compute.Periodicity.monthly)
+    kwargs = {"aggregation": "mean", "spatial_time_major": spatial}
+    diagnostics = indices.fit_diagnostics(values, *args, **kwargs)
+    summed = indices.fit_diagnostics(values, *args, spatial_time_major=spatial)
+    parameter = "beta" if distribution is indices.Distribution.gamma else "scale"
+    np.testing.assert_allclose(diagnostics.parameters[parameter], summed.parameters[parameter] / 3)
+    inline = indices.standardized_index(values, *args, **kwargs)
+
+    fitter = "gamma_parameters" if distribution is indices.Distribution.gamma else "pearson_parameters"
+    with mock.patch.object(compute, fitter, side_effect=AssertionError(f"unexpected {fitter} call")):
+        supplied = indices.standardized_index(values, *args, fitting_params=diagnostics.parameters, **kwargs)
+
+    np.testing.assert_allclose(supplied, inline, equal_nan=True)
+
+
+@pytest.mark.parametrize("values", [np.arange(24.0), np.full(24, np.nan)])
+def test_fit_diagnostics_rejects_an_unknown_aggregation(values: np.ndarray) -> None:
+    with pytest.raises(ValueError, match="Invalid aggregation argument"):
+        indices.fit_diagnostics(
+            values,
+            3,
+            indices.Distribution.gamma,
+            1980,
+            1980,
+            1981,
+            compute.Periodicity.monthly,
+            aggregation="median",  # type: ignore[arg-type]
+        )
+
+
+def test_fit_diagnostics_rejects_an_undeclared_ambiguous_block():
+    """The same ambiguous (time, cells) shape that ``spi`` rejects is rejected here."""
+    values = np.arange(1.0, (40 * 12 * 12 * 3) + 1.0).reshape(40 * 12, 12, 3)
+
+    with pytest.raises(ValueError, match="declare it with spatial_time_major"):
+        indices.fit_diagnostics(values, 1, indices.Distribution.gamma, 1981, 1981, 2010, compute.Periodicity.monthly)
+
+
+def test_fit_diagnostics_folds_and_fits_a_declared_time_major_block():
+    """A declared (time, *cells) block fits per cell, matching a standalone series call."""
+    block = np.arange(1.0, (40 * 12 * 12 * 3) + 1.0).reshape(40 * 12, 12, 3)
+
+    diagnostics = indices.fit_diagnostics(
+        block, 1, indices.Distribution.gamma, 1981, 1981, 2010, compute.Periodicity.monthly, spatial_time_major=True
+    )
+    single = indices.fit_diagnostics(
+        block[:, 0, 0], 1, indices.Distribution.gamma, 1981, 1981, 2010, compute.Periodicity.monthly
+    )
+
+    assert diagnostics.n_valid.shape == (12, 12, 3)
+    np.testing.assert_allclose(diagnostics.ks_statistic[:, 0, 0], single.ks_statistic)
+    np.testing.assert_allclose(diagnostics.parameters["alpha"][:, 0, 0], single.parameters["alpha"])
+
+
+def test_fit_diagnostics_folds_an_all_missing_declared_block():
+    """An all-missing time-major block still returns one diagnostic axis per cell."""
+    values = np.full((40 * 12, 12, 3), np.nan)
+
+    diagnostics = indices.fit_diagnostics(
+        values, 1, indices.Distribution.gamma, 1981, 1981, 2010, compute.Periodicity.monthly, spatial_time_major=True
+    )
+
+    assert diagnostics.n_valid.shape == (12, 12, 3)
+    assert np.all(diagnostics.n_valid == 0)
+
+
+def test_fit_diagnostics_folds_an_all_missing_undeclared_block():
+    values = np.full((40 * 12, 5, 6), np.nan)
+
+    diagnostics = indices.fit_diagnostics(
+        values, 1, indices.Distribution.gamma, 1981, 1981, 2010, compute.Periodicity.monthly
+    )
+
+    assert diagnostics.n_valid.shape == (12, 5, 6)
+    assert np.all(diagnostics.n_valid == 0)
+
+
+def test_fit_diagnostics_supports_daily_periodicity():
+    """A daily series gets 366 calendar steps rather than a monthly axis."""
+    values = np.arange(1.0, (10 * 366) + 1.0)
+
+    diagnostics = indices.fit_diagnostics(
+        values, 1, indices.Distribution.gamma, 2000, 2000, 2009, compute.Periodicity.daily
+    )
+
+    assert diagnostics.n_valid.shape == (366,)
