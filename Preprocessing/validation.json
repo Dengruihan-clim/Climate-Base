@@ -1,17 +1,173 @@
 {
-  "test_scope": "Synthetic CF data only",
-  "tests_passed": 42,
+  "validated_on": "2026-11-01",
+  "package_version": "0.2.1",
+  "baseline_commit": "d0ad09e0ca1f9cc589469a0fe08a30f8e7be6601",
+  "working_tree_state": "validated_source_snapshot_prepared_for_publication",
+  "interpreter": "C:\\ProgramData\\anaconda3\\python.exe",
+  "python_version": "3.12.4",
+  "platform": "Windows",
+  "dependencies": {
+    "numpy": "1.26.4",
+    "pandas": "2.2.2",
+    "xarray": "2023.6.0",
+    "dask": "2024.5.0",
+    "netCDF4": "1.7.5.1.post1",
+    "cftime": "1.6.6.1",
+    "pytest": "7.4.4",
+    "setuptools": "69.5.1"
+  },
+  "baseline_tests_passed": 42,
+  "tests_passed": 147,
   "tests_failed": 0,
-  "python_files_ast_passed": 11,
-  "pyproject_parsed": true,
-  "privacy_pattern_scan": "passed",
-  "bundled_real_or_generated_data": false,
-  "source_hash_comparison": "Three selected original kernels match read-only deployed SHA256; private mapping maintained separately",
-  "interpreter": "User-specified Anaconda Python; existing netCDF4/cftime temporarily loaded only in the validation process",
-  "no_hpc_project_entrypoints_executed": true,
+  "tests_skipped": 0,
+  "installed_wheel_tests_passed": 147,
+  "installed_wheel_tests_failed": 0,
+  "wheel_import_outside_source_tree": "passed",
+  "wheel_module_cli": "passed",
+  "sdist_and_wheel_build": "passed; wheel built from sdist",
+  "ruff": "passed (src, tests, examples, tools)",
+  "documentation_local_links": "72 passed",
+  "test_scope": "Offline synthetic data; analytical values, metadata, Dask task counts, failure/resource tests and existing API compatibility",
+  "commands": [
+    "python -m pytest tests -q --basetemp <workspace-temporary-directory>",
+    "python -m ruff check src tests examples tools",
+    "python -m build --no-isolation --outdir <workspace-build-directory>",
+    "python tools/check_wheel.py <workspace-build-directory>"
+  ],
+  "environment_note": "Missing netCDF4/cftime and build/lint tools installed in workspace-only target; selected Anaconda environment unchanged.",
+  "not_validated": [
+    "macOS runtime",
+    "Python 3.11 runtime",
+    "remote CI execution",
+    "Full ERA5 archive/full-grid execution and other real providers",
+    "GRIB/Zarr/xESMF/GeoCAT/WRF/Meteostat backends",
+    "performance speedup benchmarks"
+  ],
   "limits": [
-    "Tests do not certify all provider products or original GRIB inputs",
-    "Monthly records must already represent the intended monthly product",
-    "No horizontal/vertical interpolation or physical range validation is performed"
-  ]
+    "Rectilinear 1-D latitude/longitude",
+    "Explicit existing unit table",
+    "No implicit frequency/gap inference or calendar conversion",
+    "Repeated static fields across files rejected",
+    "Size/mtime guards are not cryptographic snapshots",
+    "Legacy ndarray return boundaries compute; use lazy APIs for composition"
+  ],
+  "bundled_real_or_generated_data": false,
+  "third_party_implementation_copied": false,
+  "no_existing_hpc_scientific_workflows_executed": true,
+  "hpc_validation": {
+    "validated_on": "2026-11-01",
+    "platform": "Linux x86_64, glibc 2.28, login node",
+    "python_version": "3.13.5",
+    "dependencies": {
+      "numpy": "2.3.4",
+      "pandas": "2.3.3",
+      "xarray": "2026.2.0",
+      "dask": "2025.11.0",
+      "netCDF4": "1.7.5.1.post1",
+      "cftime": "1.6.5",
+      "pytest": "8.4.2"
+    },
+    "environment": "Dedicated venv reusing existing scientific dependencies; original environment unchanged",
+    "installed_package_tests_passed": 119,
+    "installed_package_tests_failed": 0,
+    "runtime_source_hashes_matching_local_source": 23,
+    "real_data": {
+      "product": "ERA5 monthly mean pressure-level V wind, RDA ds633.1",
+      "source_years": [
+        2003,
+        2004
+      ],
+      "selection_per_source": {
+        "time": 1,
+        "level": 2,
+        "latitude": 16,
+        "longitude": 32
+      },
+      "pass": 17,
+      "expected_rejection": 2,
+      "fail": 0,
+      "not_applicable": 0,
+      "expected_rejections": [
+        "Original multi-file metadata conflicts",
+        "Existing output overwrite"
+      ],
+      "dask_workers": 2,
+      "blas_threads": 1,
+      "elapsed_seconds": 2.29,
+      "peak_rss_kib": 414980,
+      "original_input_size_and_mtime_unchanged": true,
+      "scope": "Original metadata/lazy graphs and one contiguous hyperslab per source; transformations and roundtrips on derived real subsets",
+      "unit_scope": "Identity conversion of actual m s**-1 values",
+      "multifile_scope": "Original inputs rejected for verified attribute conflicts; explicitly harmonized derived shards concatenated successfully",
+      "performance_note": "Bounded functional validation, not a throughput or speedup benchmark"
+    },
+    "environment_remediation": "Replaced inherited netCDF4 1.7.3 only in the new venv; configured the existing Anaconda C++ runtime path. Precise NumPy ABI-warning and NetCDF-first import checks passed.",
+    "remaining_warnings": [
+      "xarray cftime_range deprecation in one synthetic test",
+      "Source time/utc_date storage chunks differ from the field time chunks; originals were not computed through those Dask graphs"
+    ],
+    "private_reports": "Stored outside the public repository; no original or derived real-data files bundled",
+    "package_version": "0.2.0"
+  },
+  "source_hash_comparison": "Original attribution retained in SOURCE_NOTES.md; current manifest regenerated by tools/update_manifest.py.",
+  "observed_test_anomalies": [
+    {
+      "event": "One Windows installed-wheel verification stalled during the synthetic CLI roundtrip; its identified child process was terminated.",
+      "followup": "Subsequent full source and installed-wheel runs each passed all 115 tests. Six same-process failure-cleanup/source-change/CLI cycles passed all 18 invocations.",
+      "root_cause": "Not reproduced or identified; no claim of a fixed scheduler/library bug.",
+      "diagnostics": "Wheel validation enables faulthandler at 30 seconds, a 300-second test process timeout, and CI jobs have a 15-minute timeout."
+    }
+  ],
+  "installed_wheel_package_version": "0.2.1",
+  "metadata_policy_validation": {
+    "source_tests_passed": 147,
+    "source_tests_failed": 0,
+    "new_policy_tests_passed": 24,
+    "policy": "strict by default; explicit preserve_sources for documented per-source descriptive attributes",
+    "package_version": "0.2.1",
+    "installed_wheel_tests_passed": 147,
+    "hpc_installed_tests_passed": 147,
+    "hpc_installed_tests_failed": 0,
+    "hpc_real_original_merge": {
+      "source_years": [
+        2003,
+        2004
+      ],
+      "logical_dimensions": {
+        "time": 24,
+        "level": 37,
+        "latitude": 721,
+        "longitude": 1440
+      },
+      "construction_field_tasks": 0,
+      "computed_sample_dimensions": {
+        "time": 2,
+        "level": 2,
+        "latitude": 16,
+        "longitude": 32
+      },
+      "sample_comparison": "exact values, coordinates and utc_date against previously validated real subsets",
+      "passed": 5,
+      "expected_strict_rejection": 1,
+      "failed": 0,
+      "not_run": 0,
+      "original_files_unchanged": true,
+      "sample_output_provenance_roundtrip": "passed",
+      "elapsed_seconds": 2.63,
+      "peak_rss_kib": 453332,
+      "scheduler": "Dask threads/2 by default; original sample compute single-threaded to bound native-chunk memory",
+      "full_24_month_field_computed": false
+    },
+    "hpc_cli_inspect": "passed on original two annual files with preserve_sources",
+    "hpc_runtime_source_hashes_matching_local": 23,
+    "source_attributes_policy": "Known file-scoped history/dates and descriptive ranges recorded per input; units, grids, calendars, CF links and unknown attributes remain strict",
+    "prior_hpc_validation_note": "The hpc_validation section above records the separate 0.2.0 run; this section records the 0.2.1 fix."
+  },
+  "publication_checks": {
+    "package_text_line_endings": "LF; .gitattributes included in source distribution",
+    "runtime_sources_matching_tested_hpc_wheel_after_lf_normalization": 23,
+    "runtime_behavior_changes_since_hpc_validation": false,
+    "validation_timing": "Pre-publication snapshot; GitHub Actions is supplied as an inactive template",
+    "github_actions": "Definition retained as docs/preprocessing/preprocessing-ci.yml.example; not enabled in this update"
+  }
 }

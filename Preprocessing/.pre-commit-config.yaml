@@ -1,0 +1,9 @@
+# Reference: GeoCAT-comp v2026.04.0/.pre-commit-config.yaml (workflow design).
+# Climate-Base: apply a small rule set only to this independently built package.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.10
+    hooks:
+      - id: ruff
+        files: ^Preprocessing/.*\.py$
+        args: [--config, Preprocessing/pyproject.toml]

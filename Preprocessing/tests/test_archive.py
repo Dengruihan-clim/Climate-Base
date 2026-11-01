@@ -1,7 +1,6 @@
 from datetime import datetime
 import hashlib
 import json
-from pathlib import Path
 import shutil
 import numpy as np
 import pytest
@@ -46,7 +45,7 @@ def archive(tmp_path, files="*.nc", **kwargs):
 
 
 def test_normalized_pressure_axes_dimensions_and_values(tmp_path):
-    p, lat, lon = np.array([100000., 50000., 10000.]), np.array([90., 0., -90.]), np.array([-180., -90., 0., 90.])
+    lat, lon = np.array([90., 0., -90.]), np.array([-180., -90., 0., 90.])
     values = np.arange(3)[:, None, None] * 10 + lat[None, :, None] / 90 + 3 * np.cos(np.deg2rad(lon))[None, None, :]
     make_file(tmp_path / "a.nc", values=values, permute=True)
     field = archive(tmp_path).read("t", 2000, 1)

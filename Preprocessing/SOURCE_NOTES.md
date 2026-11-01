@@ -24,3 +24,9 @@ No third-party model source, private data, derived research results or credentia
 未附第三方模式源码、私人数据、研究结果或凭据；所列 Python 库作为外部依赖使用，其许可分别由发布方提供。本说明仅记录来源，不为代码、资料或第三方软件新增或改变许可条款。
 
 Format reference / 格式参考：[CF Metadata Conventions](https://cfconventions.org/).
+
+## 0.2 xarray/Dask refactor / 重构说明
+
+The original monthly/seasonal scientific rules and public return types are retained. Field transformations now build xarray/Dask graphs and compute at documented legacy-return or write boundaries. New general NetCDF functions are independent compositions of public library APIs, with explicit source and improvement notes in each module. See [THIRD_PARTY.md](THIRD_PARTY.md) for file-to-reference mappings; no third-party numerical implementation has been copied into this package.
+
+原有月资料/季节科学规则与公开返回类型保留；场运算迁移为 xarray/Dask 任务图，在旧接口返回或写出边界计算。新增通用 NetCDF 函数由公开库接口独立组合，各模块注明参考与本项目改进；文件到来源映射见 [THIRD_PARTY.md](THIRD_PARTY.md)，本次未复制第三方数值实现。

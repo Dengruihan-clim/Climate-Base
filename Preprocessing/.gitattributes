@@ -1,0 +1,2 @@
+# Keep source/archive bytes and SHA256SUMS consistent on every platform.
+* text=auto eol=lf

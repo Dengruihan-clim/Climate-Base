@@ -1,12 +1,30 @@
-"""Strict, streaming monthly CF NetCDF input on native rectilinear grids."""
+"""Strict monthly CF indexing with deferred xarray/Dask field reads.
+
+References
+----------
+The strict monthly selection and source audit derive from Climate-Base 0.1.0.
+The deferred backend/chunk interface follows the public xarray I/O API:
+https://docs.xarray.dev/en/stable/user-guide/io.html
+CF time and coordinate semantics follow CF 1.12:
+https://cfconventions.org/Data/cf-conventions/cf-conventions-1.12/cf-conventions.html
+
+Climate-Base improvements
+-------------------------
+Metadata validation still occurs before any field read. ``read_lazy`` adds a
+Dask-backed DataArray with canonical dimensions, per-block source-change checks
+and explicit close ownership. The legacy ``read`` materializes only at its
+documented ndarray return boundary. No upstream source code was copied.
+"""
 from __future__ import annotations
 from dataclasses import dataclass, field
 import glob
 import hashlib
+import json
 from pathlib import Path
 from collections.abc import Mapping, Sequence
 import numpy as np
-from .units import conversion_plan, same_units, unit_key, _apply_affine
+import xarray as xr
+from .units import conversion_plan, same_units, unit_key, _apply_affine, convert_dataarray_units
 from ._validation import checked_integer, checked_bool
 
 
@@ -73,6 +91,14 @@ def _axis(ds, name, meaning):
     if meaning == "longitude" and unit_key(units) not in {"degreeseast", "degreeeast", "degreese", "degreee"}:
         raise ValueError("Longitude units must explicitly indicate degrees_east")
     return values, var.dimensions[0], units
+
+
+def _guard_source_block(block, *, path, stamp):
+    """Reject a changed source before a computed block can enter any result."""
+    info = Path(path).stat()
+    if (info.st_size, info.st_mtime_ns) != stamp:
+        raise ValueError("Input changed after lazy graph construction; construct a new archive")
+    return block
 
 
 class MonthlyArchive:
@@ -306,6 +332,10 @@ class MonthlyArchive:
             raise ValueError("Output units changed between records; specify a consistent target_units")
 
     def _record(self, field_name, year, month, *, data):
+        # Retain this private compatibility entry while ensuring every field
+        # calculation uses the same lazy implementation.
+        if data:
+            return self.read(field_name, year, month)
         spec, path, index, source_calendar, calendar = self._select(field_name, year, month)
         Dataset, _ = _backend()
         stamp = self._stamp(path)
@@ -313,16 +343,6 @@ class MonthlyArchive:
             raise ValueError("Input changed after time selection")
         with Dataset(path) as ds:
             variable, selectors, retained, dimensions, orders, reference, transform = self._layout(ds, spec, field_name, index)
-            values = None
-            if data:
-                raw = variable[selectors]
-                if np.iscomplexobj(raw):
-                    raise ValueError("Monthly field values must be real")
-                values = np.ma.asarray(raw, dtype=np.float64).filled(np.nan)
-                values = np.transpose(values, [retained.index(d) for d in dimensions])
-                for axis, order in enumerate(orders):
-                    values = np.take(values, order, axis=axis)
-                values = _apply_affine(values, transform["scale"], transform["offset"])
         if self._stamp(path) != stamp:
             raise ValueError("Input changed during reading")
         self._register(path, field_name, year, month, index)
@@ -330,18 +350,112 @@ class MonthlyArchive:
         metadata = {"field": field_name, "year": int(year), "month": int(month),
                     "calendar": calendar, "source_calendar": source_calendar, "unit_transform": transform,
                     "pressure_units": self.pressure_units if pressure is not None else None}
-        if not data:
-            return {**metadata, "shape": ([len(pressure)] if pressure is not None else []) + [len(lat), len(lon)],
-                    "latitude_bounds": [float(lat.min()), float(lat.max())],
-                    "longitude_bounds": [float(lon.min()), float(lon.max())],
-                    "pressure": None if pressure is None else pressure.tolist(), "field_values_read": False}
-        return MonthlyField(values, lat.copy(), lon.copy(), None if pressure is None else pressure.copy(),
-                            units, calendar, source_calendar, int(year), int(month), metadata)
+        return {**metadata, "shape": ([len(pressure)] if pressure is not None else []) + [len(lat), len(lon)],
+                "latitude_bounds": [float(lat.min()), float(lat.max())],
+                "longitude_bounds": [float(lon.min()), float(lon.max())],
+                "pressure": None if pressure is None else pressure.tolist(), "field_values_read": False}
 
     def inspect(self, name, year, month):
         """Validate selected metadata/time/grid/units without reading field data."""
         return self._record(name, year, month, data=False)
 
     def read(self, name, year, month):
-        """Return one selected monthly field; dates always come from CF time."""
-        return self._record(name, year, month, data=True)
+        """Compute one monthly field at the legacy ndarray return boundary.
+
+        Use ``read_lazy`` to combine field operations before computing. Dates
+        always come from CF time and every source resource is closed here.
+        """
+        lazy = self.read_lazy(name, year, month)
+        try:
+            values = lazy.compute().data
+            metadata = json.loads(lazy.attrs["climate_preprocessing_metadata"])
+            pressure = lazy.coords["pressure"].data.copy() if "pressure" in lazy.dims else None
+            return MonthlyField(
+                values, lazy.coords["latitude"].data.copy(),
+                lazy.coords["longitude"].data.copy(), pressure,
+                lazy.attrs["units"], lazy.attrs["calendar"],
+                lazy.attrs["source_calendar"], int(year), int(month), metadata,
+            )
+        finally:
+            lazy.close()
+
+    def read_lazy(self, name, year, month, *, chunks="auto"):
+        """Return a deferred normalized monthly DataArray on a native grid.
+
+        ``chunks`` is ``'auto'``, a positive chunk size, or a mapping using the
+        output dimensions ``pressure/latitude/longitude``. None is rejected.
+        Small coordinate vectors and time metadata are read immediately, and
+        ``hash_inputs=True`` also reads source bytes for the existing audit.
+        Field values are not decoded or calculated until compute/write.
+
+        The caller owns ``result.close()`` and must keep the source unchanged
+        until computation finishes. Each executed field block verifies the
+        indexed size/mtime before entering the result. The returned field is a
+        compatibility-oriented monthly view, not a full CF Dataset round trip.
+        """
+        if chunks is None:
+            raise ValueError("read_lazy requires Dask chunks; use 'auto' or a chunk mapping")
+        spec, path, index, source_calendar, calendar = self._select(name, year, month)
+        stamp = self._stamp(path)
+        if stamp != self._time_cache[(path, spec.coordinates.time)][0]:
+            raise ValueError("Input changed after time selection")
+        Dataset, _ = _backend()
+        with Dataset(path) as ds:
+            variable, selectors, _, dimensions, orders, reference, transform = self._layout(ds, spec, name, index)
+            variable_dimensions = tuple(variable.dimensions)
+            if np.issubdtype(variable.dtype, np.complexfloating):
+                raise ValueError("Monthly field values must be real")
+        if self._stamp(path) != stamp:
+            raise ValueError("Input changed during reading")
+        self._register(path, name, year, month, index)
+        latitude, longitude, pressure, units = reference
+        output_dims = (("pressure",) if pressure is not None else ()) + ("latitude", "longitude")
+        chunk_spec = chunks
+        if isinstance(chunks, Mapping):
+            unknown = set(chunks) - set(output_dims)
+            if unknown:
+                raise ValueError(f"Unknown monthly chunk dimensions: {sorted(unknown)}")
+            chunk_spec = {native: chunks[canonical] for native, canonical in zip(dimensions, output_dims)
+                          if canonical in chunks}
+
+        # Selecting the record on the backend-lazy array before chunking avoids
+        # constructing annual field chunks for a single requested month.
+        source = xr.open_dataset(path, engine="netcdf4", chunks=None, cache=False,
+                                 decode_times=False, mask_and_scale=True)
+        try:
+            field = source[spec.variable].isel(dict(zip(variable_dimensions, selectors)), drop=True)
+            field = field.chunk(chunk_spec).transpose(*dimensions)
+            field = field.isel(dict(zip(dimensions, orders)))
+            field = convert_dataarray_units(
+                field, units,
+                source_units=spec.units_override if spec.units_override is not None else transform["source_units"],
+                scale=transform["scale"], offset=transform["offset"],
+            )
+            guarded = field.data.map_blocks(
+                _guard_source_block, path=str(path), stamp=stamp,
+                dtype=np.float64, meta=np.empty((0,), dtype=np.float64),
+            )
+            coords = {
+                "latitude": ("latitude", latitude.copy(), {"units": "degrees_north", "standard_name": "latitude"}),
+                "longitude": ("longitude", longitude.copy(), {"units": "degrees_east", "standard_name": "longitude"}),
+            }
+            if pressure is not None:
+                coords["pressure"] = ("pressure", pressure.copy(), {
+                    "units": self.pressure_units, "standard_name": "air_pressure", "positive": "down"
+                })
+            metadata = {"field": name, "year": int(year), "month": int(month),
+                        "calendar": calendar, "source_calendar": source_calendar,
+                        "unit_transform": transform,
+                        "pressure_units": self.pressure_units if pressure is not None else None}
+            result = xr.DataArray(
+                guarded, dims=output_dims, coords=coords, name=name,
+                attrs={"units": units, "calendar": calendar, "source_calendar": source_calendar,
+                       "climate_preprocessing_metadata": json.dumps(metadata, sort_keys=True)},
+            )
+            if self._stamp(path) != stamp:
+                raise ValueError("Input changed after lazy graph construction")
+            result.set_close(source.close)
+            return result
+        except BaseException:
+            source.close()
+            raise

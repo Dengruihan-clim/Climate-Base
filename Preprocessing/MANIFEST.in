@@ -1,0 +1,7 @@
+include README.md README_EN.md SOURCE_NOTES.md THIRD_PARTY.md CONTRIBUTING.md CHANGELOG.md
+include requirements.txt validation.json SHA256SUMS.txt
+include .gitattributes .gitignore .pre-commit-config.yaml
+recursive-include examples *.py *.json
+recursive-include tests *.py
+recursive-include tools *.py
+global-exclude __pycache__ *.py[cod]

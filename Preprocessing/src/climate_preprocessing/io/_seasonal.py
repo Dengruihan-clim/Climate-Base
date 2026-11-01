@@ -1,4 +1,13 @@
-"""Atomic, non-overwriting export of normalized seasonal series."""
+"""Atomic, non-overwriting export of normalized seasonal series.
+
+Reference: author-owned Climate-Base d0ad09e seasonal writer:
+https://github.com/Dengruihan-clim/Climate-Base/blob/d0ad09e0ca1f9cc589469a0fe08a30f8e7be6601/Preprocessing/climate_preprocessing/io.py
+
+Climate-Base changes: relocated behind the compatible ``io`` exports. The
+streaming file format and publication behavior are preserved. Input seasonal
+fields have already computed at their documented xarray/Dask return boundary;
+the general lazy Dataset writer is implemented separately in ``write.py``.
+"""
 from __future__ import annotations
 from datetime import datetime, timezone
 import json

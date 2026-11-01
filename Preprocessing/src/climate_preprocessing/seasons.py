@@ -1,7 +1,24 @@
-"""Complete-season reductions using the actual CF calendar."""
+"""Compatibility seasonal reductions using xarray/Dask and the CF calendar.
+
+References
+----------
+Season definitions and complete-cell rules are the author's Climate-Base 0.1.0
+methods. Array alignment and lazy reduction use xarray's public API:
+https://docs.xarray.dev/en/stable/user-guide/dask.html
+https://docs.xarray.dev/en/stable/generated/xarray.concat.html
+
+Climate-Base improvements
+-------------------------
+Monthly fields remain deferred through weighting and completeness checks, then
+one season is computed at the existing ndarray return boundary. All input
+resources close even if selection or computation fails. This is an internal
+execution refactor of the existing compatibility API, not a new statistical
+feature, and no upstream algorithm was copied.
+"""
 from __future__ import annotations
 from dataclasses import dataclass
 import numpy as np
+import xarray as xr
 from ._validation import checked_integer
 
 
@@ -69,23 +86,35 @@ def iter_seasons(archive, name, start_year, end_year, *, months=(12, 1, 2), weig
     dates = season_dates(start_year, end_year, months)
     for position in range(0, len(dates), len(months)):
         season = dates[position:position + len(months)]
-        total, valid, first, denominator = None, None, None, 0.
-        for _, year, month in season:
-            current = archive.read(name, year, month)
-            if first is None:
-                first = {"latitude": current.latitude, "longitude": current.longitude,
-                         "pressure": current.pressure, "units": current.units, "calendar": current.calendar}
-                total = np.zeros(current.values.shape, dtype=np.float64)
-                valid = np.ones(current.values.shape, dtype=bool)
-            weight = month_days(year, month, current.calendar) if weighting == "days" else 1.
-            finite = np.isfinite(current.values)
-            valid &= finite
-            total += np.where(finite, current.values, 0.) * weight
-            denominator += weight
-        values = np.where(valid, total / denominator, np.nan)
-        yield SeasonalField(values[None], np.array([season[0][0]], dtype=np.int32),
-                            first["latitude"], first["longitude"], first["pressure"],
-                            first["units"], first["calendar"], months, weighting)
+        monthly, weights = [], []
+        try:
+            for _, year, month in season:
+                current = archive.read_lazy(name, year, month)
+                monthly.append(current)
+                weights.append(month_days(year, month, current.attrs["calendar"])
+                               if weighting == "days" else 1.)
+            first = monthly[0]
+            series = xr.concat(
+                monthly, dim=xr.IndexVariable("season_month", np.arange(len(months))),
+                coords="minimal", compat="equals", join="exact",
+            )
+            weight_array = xr.DataArray(weights, dims="season_month").chunk({"season_month": 1})
+            finite = xr.apply_ufunc(np.isfinite, series, dask="allowed")
+            total = (series.where(finite, 0.) * weight_array).sum("season_month", skipna=False)
+            reduced = (total / sum(weights)).where(finite.all("season_month"))
+            # This compute is intentional: SeasonalField retains its historical
+            # ndarray contract while all field arithmetic above stays deferred.
+            values = reduced.compute().data
+            result = SeasonalField(
+                values[None], np.array([season[0][0]], dtype=np.int32),
+                first.coords["latitude"].data.copy(), first.coords["longitude"].data.copy(),
+                first.coords["pressure"].data.copy() if "pressure" in first.dims else None,
+                first.attrs["units"], first.attrs["calendar"], months, weighting,
+            )
+        finally:
+            for current in monthly:
+                current.close()
+        yield result
 
 
 def seasonal_mean(archive, name, start_year, end_year, *, months=(12, 1, 2), weighting="days"):

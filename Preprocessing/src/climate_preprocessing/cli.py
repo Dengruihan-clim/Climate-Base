@@ -1,4 +1,9 @@
-"""Command-line metadata checks and complete-season NetCDF export."""
+"""Explicit lazy preparation and compatible legacy monthly commands.
+
+References: original Climate-Base CLI at d0ad09e (see SOURCE_NOTES.md).
+Climate-Base improvements: versioned prepare/inspect configuration is separate
+from the legacy check/seasonal contract; preparation computes only on output.
+"""
 import argparse
 import json
 from pathlib import Path
@@ -32,10 +37,14 @@ def load_config(path):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("check", "seasonal"))
+    parser = argparse.ArgumentParser(
+        description="Prepare local CF NetCDF with xarray/Dask or run compatible monthly commands."
+    )
+    parser.add_argument("action", choices=("check", "seasonal", "inspect", "prepare"))
     parser.add_argument("config", type=Path)
     args = parser.parse_args(argv)
+    if args.action in {"inspect", "prepare"}:
+        return _prepare_command(args.action, args.config, parser)
     archive, analysis, dates, output = load_config(args.config)
     if args.action == "check":
         records = [archive.inspect(name, year, month) for name in archive.fields for _, year, month in dates]
@@ -56,6 +65,35 @@ def main(argv=None):
         summary = {"state": "complete", "output": str(output), "years": ds["season_year"][:].tolist(),
                    "shape": list(ds["seasonal_value"].shape), "calendar": ds.calendar, "units": ds["seasonal_value"].units}
     print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _prepare_command(action, path, parser):
+    from .config import load_prepare_config
+    from .pipeline import prepare_dataset
+    from .io import write_dataset
+
+    config = load_prepare_config(path)
+    if action == "prepare":
+        if config.output is None:
+            parser.error("prepare requires output in the configuration")
+        if config.output.exists() or config.output.is_symlink():
+            raise FileExistsError("Output exists; choose a new NetCDF filename")
+    with prepare_dataset(config.inputs, **config.options) as dataset:
+        summary = {
+            "state": "inspected" if action == "inspect" else "prepared",
+            "dimensions": dict(dataset.sizes),
+            "variables": {
+                name: {"dimensions": list(variable.dims), "units": variable.attrs.get("units"),
+                       "chunks": variable.chunks}
+                for name, variable in dataset.data_vars.items()
+            },
+            "field_values_read": action == "prepare",
+            "outputs_written": action == "prepare",
+        }
+        if action == "prepare":
+            summary["output"] = str(write_dataset(dataset, config.output))
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
 
 
