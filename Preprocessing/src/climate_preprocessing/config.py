@@ -35,6 +35,7 @@ def load_prepare_config(path):
     allowed = {
         "schema_version", "input", "output", "chunks", "coordinates", "time",
         "longitude_convention", "latitude_order", "region", "units", "metadata_policy",
+        "pressure", "expected_time", "time_range",
     }
     if set(config) - allowed:
         raise ValueError(f"Unknown preparation configuration keys: {sorted(set(config) - allowed)}")
@@ -43,6 +44,17 @@ def load_prepare_config(path):
     policy = config.get("metadata_policy", "strict")
     if not isinstance(policy, str) or policy not in ("strict", "preserve_sources"):
         raise ValueError("metadata_policy must be 'strict' or 'preserve_sources'")
+    for key, keys in (("pressure", {"pressure", "target_units", "order"}),
+                      ("time_range", {"start", "end"})):
+        value = config.get(key)
+        if value is not None and (not isinstance(value, dict) or set(value) - keys):
+            raise ValueError(f"Invalid {key}; supported keys are {sorted(keys)}")
+    expected = config.get("expected_time")
+    if expected is not None and (
+        not isinstance(expected, list) or not expected
+        or any(not isinstance(value, str) or not value for value in expected)
+    ):
+        raise ValueError("expected_time must be a nonempty list of complete ISO date strings")
     sources = config.get("input")
     if isinstance(sources, str):
         sources = [sources]

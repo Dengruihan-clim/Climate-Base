@@ -4,6 +4,39 @@
 
 **Authors: RH_Deng; Codex (OpenAI, AI-assisted organization and refactoring).**
 
+## 0.3.0: pressure, expected time indexes and user masks
+
+Version 0.3.0 passed **283 tests each** on the local source, a wheel installed outside the source tree, and Linux HPC. The original merge regression recorded 5 passes and 1 expected rejection; the new pressure/time/mask validation recorded 7 passes and 4 expected rejections, with no failures or unrun cases. A January 2004 sample of two levels and 16×32 points matched prior reference values exactly; construction ran zero field tasks, masking and output roundtrips agreed, and original sizes/mtimes were unchanged. Expected rejections cover incomplete indexes, empty selections, misaligned masks, output overwrite and the original strict attribute policy. Full fields and speedup were not benchmarked. See [validation.json](validation.json).
+
+The next P2/P3 operations keep field transformations lazy through xarray/Dask:
+
+- `normalize_pressure(ds, pressure="level", target_units="hPa", order="ascending")` identifies a one-dimensional physical pressure axis from explicit units and CF evidence, converts Pa/hPa and reorders fields/bounds together. The canonical coordinate is `pressure`. It does not reinterpret arbitrary model levels or interpolate vertically.
+- `validate_time(ds, expected=...)` compares the entire input against an explicit expected index, including internal and endpoint gaps. Decoded dates or complete ISO strings are accepted in the source calendar; no frequency inference, filling or calendar conversion occurs.
+- `subset_time(ds, start=..., end=...)` selects an inclusive interval of exact instants, retaining time bounds and auxiliary variables. `YYYY-MM-DD` means midnight; partial year/month strings and empty selections are rejected.
+- `apply_mask(ds, condition, variables=[...], reason="...")` retains True and masks False. Target fields and a reason are required. Shared dimension labels must match exactly in the same order; dimension broadcasting is allowed, implicit intersection or realignment is not. QC flags and CF structural variables are protected. No product-specific QC meaning is guessed.
+
+`prepare_dataset` and schema-v1 JSON accept optional `pressure`, `expected_time` and `time_range`. The complete input index is checked before selection. Surface datasets do not need pressure unless requested. Compose arbitrary masks afterwards with the Python API; JSON does not execute expressions.
+
+```python
+from climate_preprocessing import apply_mask, prepare_dataset, write_dataset
+
+with prepare_dataset(
+    "monthly.nc", chunks={"time": 1},
+    pressure={"pressure": "level", "target_units": "hPa", "order": "ascending"},
+    expected_time=["2000-01-01", "2000-02-01", "2000-03-01"],
+    time_range={"start": "2000-02-01", "end": "2000-03-01"},
+) as ds:
+    selected = apply_mask(ds, ds.quality == 0, variables=["temperature"],
+                          reason="Retain quality == 0 according to this product's definition")
+    write_dataset(selected, "new_masked.nc")
+```
+
+Variable names and QC meanings must match the actual product. Keep independently opened mask files alive until execution ends; closing the result closes its shared source Dataset, but does not own an external mask file. Run `python examples/pressure_time_mask.py /path/to/new_demo` for a fully synthetic pressure/time/QC roundtrip with no downloads.
+
+Pressure centers and bounds endpoints must currently be strictly positive; zero-pressure top interfaces need a later interface-coordinate workflow. Masked integer fields use floating point to represent NaN. Retained integers that cannot be represented exactly raise when the relevant Dask block executes, preventing silent value changes.
+
+Module references and independently implemented improvements are listed in [THIRD_PARTY.md](THIRD_PARTY.md). Calendar conversion, GRIB/Zarr, regridding, hybrid levels, product adapters and the Meteostat provider remain planned.
+
 ## 0.2.1: implemented lazy preprocessing workflow
 
 New public functions use **xarray Dataset/DataArray and Dask-backed fields**. Reading, coordinate normalization, geographic selection, masking and unit conversion stay lazy until `write_dataset` or an explicit `.compute()`. Small coordinate/time/bounds arrays may be inspected eagerly; NumPy is used inside numerical blocks. Tests verify that constructing transformations does not run field tasks. This is not a measured speedup claim; throughput depends on chunks, data size and I/O.
@@ -26,7 +59,7 @@ with prepare_dataset(
 
 Run `python examples/netcdf_prepare.py /path/to/new_demo` for a fully synthetic example. Its schema-v1 JSON config can be passed to `python -m climate_preprocessing inspect CONFIG` and `python -m climate_preprocessing prepare CONFIG`. The example already writes `prepared.nc`; choose a new output filename before preparing again. Relative paths resolve against the configuration. Explicit input lists are required. Chunks use native input dimension names; unknown dimensions and `None` are rejected. Keep inputs unchanged and available until computation/output finishes, then close the Dataset.
 
-Current limits: one-dimensional rectilinear latitude/longitude; longitude bounds must enclose centers in unwrapped intervals narrower than 180 degrees; explicit existing unit table rather than a full Pint vocabulary; time order/calendar checks without frequency inference or calendar conversion. GRIB/Zarr, regridding, hybrid levels, product-specific adapters and Meteostat fetching remain future work.
+Current limits: one-dimensional rectilinear latitude/longitude; longitude bounds must enclose centers in unwrapped intervals narrower than 180 degrees; explicit existing unit table rather than a full Pint vocabulary. Time supports order/calendar validation, explicit expected-index checks and exact inclusive selection, without frequency inference or calendar conversion. GRIB/Zarr, regridding, hybrid levels, product-specific adapters and Meteostat fetching remain future work.
 
 Multiple files must agree on non-time coordinates, field names, units and decoded dtypes. Duplicate times or incompatible calendars fail. Repeated static data variables must currently be read separately; the reader does not execute large fields to prove equality.
 

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.0 — 2026-11-01
+
+- Add generic CF pressure normalization with Pa/hPa conversion, canonical
+  pressure coordinates, synchronized bounds/reordering and lazy fields.
+- Add exact expected-time checks and inclusive time selection for datetime64
+  and cftime calendars. Complete ISO strings are interpreted in the source
+  calendar; no frequency inference or calendar conversion is introduced.
+- Add explicit boolean masking with exact label alignment, protected QC/CF
+  structure, metadata cleanup and recorded reasons. No imputation is performed.
+- Expose pressure and time policies in preparation/JSON configuration; preserve
+  existing defaults and monthly/seasonal APIs. Add a synthetic composed example.
+- Pass 283 tests each on source, installed wheel and HPC. Real ERA5 tests
+  record 12 passes and 5 expected rejections across the merge regression and
+  pressure/time/mask suite, with zero failures. See validation.json for scope.
+- Keep CI as an inactive template and optional P4–P8 backends unimplemented.
+
 ## 0.2.1 — 2026-11-01
 
 - Add explicit `metadata_policy="preserve_sources"` to multi-file reading,

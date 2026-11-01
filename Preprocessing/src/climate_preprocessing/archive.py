@@ -24,8 +24,9 @@ from pathlib import Path
 from collections.abc import Mapping, Sequence
 import numpy as np
 import xarray as xr
-from .units import conversion_plan, same_units, unit_key, _apply_affine, convert_dataarray_units
+from .units import conversion_plan, same_units, unit_key, convert_dataarray_units
 from ._validation import checked_integer, checked_bool
+from .coordinates import pressure_order
 
 
 @dataclass(frozen=True)
@@ -262,19 +263,9 @@ class MonthlyArchive:
         pressure = None
         if coords.pressure is not None:
             pressure, p_dim, p_units = _axis(ds, coords.pressure, "pressure")
-            factor, shift, _ = conversion_plan(p_units, self.pressure_units)
-            # Only true pressure dimensions, not arbitrary affine conversions.
-            if unit_key(p_units) not in {"pa", "pascal", "pascals", "hpa", "hectopascal", "hectopascals", "mb", "mbar", "millibar", "millibars"}:
-                raise ValueError("Pressure coordinate units must be Pa or hPa")
             if str(getattr(ds.variables[coords.pressure], "positive", "down")).lower() != "down":
                 raise ValueError("Pressure positive direction must be down")
-            pressure = _apply_affine(pressure, factor, shift)
-            p_order = np.argsort(pressure)
-            if self.pressure_order == "descending":
-                p_order = p_order[::-1]
-            pressure = pressure[p_order]
-            if np.any(pressure <= 0) or np.any(np.diff(np.sort(pressure)) <= 0):
-                raise ValueError("Pressure coordinates must be distinct and positive")
+            pressure, p_order = pressure_order(pressure, p_units, self.pressure_units, self.pressure_order)
             dimensions.insert(0, p_dim)
             orders.insert(0, p_order)
         if len(set(dimensions)) != len(dimensions):

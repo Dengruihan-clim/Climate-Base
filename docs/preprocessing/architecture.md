@@ -1,6 +1,6 @@
 # 基础气象前处理架构与代码树
 
-状态：整体设计持续分期实施；2026-11-01 已开始实现首批 xarray/Dask NetCDF 闭环。实际可用 API 以 [当前 README](../../Preprocessing/README.md) 为准，目标树仍含后续未实现模块。
+状态：整体设计持续分期实施；2026-11-01 当前版本为 0.3.0，已实现 xarray/Dask NetCDF 核心，并增加固定气压层规范化、完整期望时间索引、精确时间选择及显式用户掩膜。实际可用 API 以 [当前 README](../../Preprocessing/README.md) 为准，目标树仍含后续未实现模块。各版本验证范围见 [validation.json](../../Preprocessing/validation.json)，不把前版结果当作本轮验证。
 
 重构基线：[Climate-Base d0ad09e](https://github.com/Dengruihan-clim/Climate-Base/tree/d0ad09e0ca1f9cc589469a0fe08a30f8e7be6601)，调研时已核对本地 HEAD 与远端 main。后续用户要求所有场运算采用 xarray/Dask，故 Dask 由原计划的可选依赖改为核心必需；保留旧公开返回类型，在其边界计算。
 
@@ -74,15 +74,15 @@ Climate-Base/
 │   │   ├── __main__.py              # 仅调用 cli.main
 │   │   ├── _version.py              # 统一版本来源
 │   │   ├── _validation.py           # 保留旧基础校验的兼容路径
-│   │   ├── exceptions.py            # 可区分格式、坐标、单位、依赖错误
+│   │   ├── exceptions.py            # 已有元数据/坐标/时间错误；继承 ValueError
 │   │   ├── specs.py                 # 输入/网格/输出规格，不另造数据容器
 │   │   ├── validation.py            # 结构、坐标、声明范围、质量标记检查
 │   │   ├── metadata.py              # CF 关系与 attrs/encoding 分离
-│   │   ├── coordinates.py           # 轴识别、重命名、经度域、排序、bounds
+│   │   ├── coordinates.py           # 经纬度与固定气压层识别、单位/排序、bounds
 │   │   ├── units.py                 # 旧 convert_units 保留；新具名数组接口
-│   │   ├── time.py                  # CF 解码、历法、排序/切片/重复检查
-│   │   ├── subset.py                # 时间、层、变量、成员和跨日界线裁剪
-│   │   ├── masking.py               # 明确的有效性/地形/用户掩膜，不补值
+│   │   ├── time.py                  # decoded 时间、显式完整索引、精确闭区间选择
+│   │   ├── subset.py                # 已有空间裁剪；层/变量/成员选择后续扩展
+│   │   ├── masking.py               # 已有非有限/显式布尔掩膜；不推断QC或补值
 │   │   ├── provenance.py            # 输入标识、版本、参数和变换记录
 │   │   ├── io/
 │   │   │   ├── __init__.py          # 同时保留旧 write_seasonal* 导出
@@ -128,6 +128,7 @@ Climate-Base/
 │   │   └── data/README.md          # 小型公开夹具来源与校验和
 │   ├── examples/
 │   │   ├── netcdf_prepare.py
+│   │   ├── pressure_time_mask.py    # 0.3.0：固定气压层、时间与用户掩膜组合
 │   │   ├── regrid.py
 │   │   ├── hybrid_to_pressure.py
 │   │   ├── station_prepare.py
@@ -147,7 +148,9 @@ Climate-Base/
 
 新增通用 API 使用 `xarray.Dataset/DataArray`，场数据必须由 Dask 分块承载；小型坐标检查和块内部内核可用 NumPy。输入的内存场转为 Dask 后处理，既有分块尽量保留。计划中的 `specs.py` 仅保存选项和校验条件。`MonthlyArchive.read()` 仍返回 `MonthlyField`，在此兼容边界计算；新增 `read_lazy()` 返回 DataArray。
 
-规则经纬网使用一维 `latitude/longitude`；曲线网格保留 `y/x` 维和二维纬经坐标；垂直坐标区分 pressure、height 与 model level。不能把任意 `level` 改名为 pressure。第一阶段只承诺现有规则网格，其他网格随对应阶段验证后开放。
+规则经纬网使用一维 `latitude/longitude`；曲线网格设计保留 `y/x` 维和二维纬经坐标，当前尚未开放；垂直坐标区分 pressure、height 与 model level。0.3.0 的 `normalize_pressure` 只接受明确单位/CF 证据的一维固定气压层，转换 Pa/hPa、重排关联场并保留 CF bounds，不把任意 `level` 改名为 pressure。混合层/高度层适配与插值仍属于后续阶段。
+
+时间检查与时间选择分离：`validate_time(expected=...)` 验收完整输入索引，`subset_time` 随后选择精确闭区间；日期字符串按源历法解析，不发生历法转换或 partial-date 扩展。通用 `apply_mask` 使用与目标精确对齐的布尔 DataArray，显式指定目标和原因，保留 QC/结构变量。上述操作只读取必要坐标，场计算留在 Dask 图中；裁剪/掩膜后的过期描述范围移除并审计，不通过隐式归约重算。
 
 站点资料是另一种几何：保存 `station_id`、时间、经纬度、海拔、变量、质量标记与来源。规则记录可用 `(time, station)`，稀疏记录保留 observation 维；不为套格点接口制造稠密矩阵。Meteostat 的 pandas 对象在适配边界转换，核心不同时维护第二套通用计算 API。
 
@@ -175,7 +178,7 @@ GeoCAT 的运行依赖包含统计相关包，但本项目只调用已列明的�
 
 1. **识别与修正分离。** CF 属性优先，显式 mapping 覆盖需审计；歧义时报错。校验报告和重命名/单位转换是不同操作。基础校验不是完整 CF 合规认证。
 2. **坐标变换带动数据。** 纬度翻转、经度取模、排序同步作用于数据、bounds 与关联变量；默认重复点报错。二维经纬网不能套一维排序；跨日界线裁剪显式处理。选择操作默认不插值。
-3. **多文件合并从严。** 使用实际 CF 时间、显式 concat 轴和非拼接维精确匹配；静态变量/属性冲突要检测。不能默认 outer join、`compat='override'` 或忽略错误。0.2.1 提供显式 `metadata_policy="preserve_sources"`，只把白名单中的文件说明及描述范围移入逐来源审计；单位、网格、历法、CF 引用、有效值限制和未知属性仍从严。缺时段检查依据用户声明的频率/预期索引，而非对所有资料强套逐月规则。
+3. **多文件合并从严。** 使用实际 CF 时间、显式 concat 轴和非拼接维精确匹配；静态变量/属性冲突要检测。不能默认 outer join、`compat='override'` 或忽略错误。0.2.1 起提供显式 `metadata_policy="preserve_sources"`，只把白名单中的文件说明及描述范围移入逐来源审计；单位、网格、历法、CF 引用、有效值限制和未知属性仍从严。0.3.0 的缺时段检查依据使用者提供的完整期望索引，不推断频率，也不对所有资料强套逐月规则。
 4. **保留日历与预报语义。** 支持 cftime，不默默转 pandas；不自动删闰日或混合 360_day 与 Gregorian。历法转换需指定对齐/缺日策略。`forecast_reference_time`、`step`、`valid_time` 分开，按有效时间重复的预报不自动去重。
 5. **单位转换真实改变数值。** 不只改 `units` 属性；区分摄氏温度与温差。未知单位可原样保留但不可自动换算；位势到高度、累计到速率等物理语义转换不混同单位换算。
 6. **缺测不变有效零。** `_FillValue`、mask 和 NaN 统一时保留来源；QC 原标记作为关联变量保留。按声明范围筛选需显式选择；不做统计异常识别或自动补洞。

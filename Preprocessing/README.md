@@ -4,6 +4,39 @@
 
 **作者：RH_Deng；Codex（OpenAI，AI 辅助整理与重构）。**
 
+## 0.3.0：压力、预期时间与用户掩膜
+
+0.3.0 已通过本地源码、树外 wheel 与 Linux HPC 各 **283 项测试**。原跨年拼接实测 5 项通过、1 项预期拒绝；新增压力/时间/掩膜实测 7 项通过、4 项预期拒绝，均无失败或未运行项。2004 年 1 月两层、16×32 格点与原有参考逐值一致，构图零场任务，掩膜与写回一致，原文件大小和修改时间不变。预期拒绝验证缺记录、空时间选择、掩膜错位、覆盖输出及原严格属性策略。不计算完整全场，不声称已测得加速比。详见 [validation.json](validation.json)。
+
+按代码树补齐 P2/P3 的下一批能力，所有场变换继续通过 xarray/Dask 惰性执行：
+
+- `normalize_pressure(ds, pressure="level", target_units="hPa", order="ascending")`：依据明确单位和 CF 证据识别一维气压坐标，转换 Pa/hPa、排序，并同步数据、bounds 与 CF 引用。输出坐标名为 `pressure`；不将任意模式层改成气压，不进行垂直插值。
+- `validate_time(ds, expected=...)`：与用户给出的完整预期时间索引精确比较，检查中间和首尾缺记录。支持解码时间或完整 ISO 日期字符串，保留源历法；不推断频率、不补值、不转换历法。
+- `subset_time(ds, start=..., end=...)`：按精确时刻作闭区间选择，保留时间 bounds 和辅助变量。`YYYY-MM-DD` 表示当日午夜；不接受仅年份/月的部分日期，空结果报错。
+- `apply_mask(ds, condition, variables=[...], reason="...")`：布尔条件 True 保留、False 置缺测；必须显式选择字段并注明理由。共享维标签须完全同序匹配，允许按维广播，不自动交集或重新对齐。原 QC 与 CF 结构变量受保护，不自动将 QC 解释为有效性。
+
+`prepare_dataset` 及 schema-v1 JSON 配置增加可选 `pressure`、`expected_time`、`time_range`；先检查完整输入时间，再切片。默认不要求地面资料含气压轴。任意布尔掩膜通过 Python API 在准备之后组合，JSON 不执行表达式。
+
+```python
+from climate_preprocessing import apply_mask, prepare_dataset, write_dataset
+
+with prepare_dataset(
+    "monthly.nc", chunks={"time": 1},
+    pressure={"pressure": "level", "target_units": "hPa", "order": "ascending"},
+    expected_time=["2000-01-01", "2000-02-01", "2000-03-01"],
+    time_range={"start": "2000-02-01", "end": "2000-03-01"},
+) as ds:
+    selected = apply_mask(ds, ds.quality == 0, variables=["temperature"],
+                          reason="按该产品定义保留 quality == 0 的记录")
+    write_dataset(selected, "new_masked.nc")
+```
+
+示例中的变量和 QC 含义需与实际产品一致。独立掩膜文件必须由调用者保持打开直至计算结束；结果关闭共享源 Dataset，不取得外部掩膜文件的关闭所有权。可运行纯合成示例：`python examples/pressure_time_mask.py /path/to/new_demo`。它验证压力换算与重排、时间选择、QC 保留和缺测写回；不下载真实数据。
+
+当前压力层中心和 bounds 端点均须大于零，零压顶界留待层界面流程处理。整数场掩膜需要浮点数表示 NaN；不能被浮点数精确表示的保留整数会在对应 Dask 块执行时报错，避免悄悄改变数值。
+
+参考与独立改进逐模块列明，见 [THIRD_PARTY.md](THIRD_PARTY.md)。历法转换、GRIB/Zarr、重网格、混合层、产品适配与 Meteostat provider 仍按后续阶段实施。
+
 ## 0.2.1：已实现的基础前处理闭环
 
 新通用接口以 **xarray Dataset/DataArray + Dask 分块任务图** 处理场数据。读取、坐标重排、裁剪、掩膜和单位转换保持惰性；`write_dataset` 或使用者显式 `.compute()` 时执行。小型坐标/时间/边界检查可以读取内存数组，块内部数值核可用 NumPy；不先加载整个场再假装分块。Dask 支持分块并行，但实际速度取决于数据规模、块大小与磁盘带宽，本轮验证的是正确性和惰性契约。
@@ -34,7 +67,7 @@ python -m climate_preprocessing prepare /path/to/new_demo/prepare.json
 
 示例已经写出的 `prepared.nc` 不可覆盖，再次 `prepare` 请先在配置中选择新输出名。所有相对输入/输出路径相对于配置文件；输入为显式文件列表。`chunks` 使用源维度名，未知维度报错，不能设为 `None`。`inspect` 读取元数据和坐标，但不执行场值任务。
 
-当前支持范围是规则一维经纬网；经度 bounds 需为包含中心、宽度小于 180° 的局部未跨缝区间。通用单位接口沿用现有明确换算表，尚未引入 Pint/cf-xarray 的全套词汇。时间只检查已解码日期及顺序，不推断频率、自动补缺时段或转换日历。GRIB/Zarr、重网格、混合层、提供方专用适配和 Meteostat 获取接口尚待后续阶段。
+当前支持范围是规则一维经纬网；经度 bounds 需为包含中心、宽度小于 180° 的局部未跨缝区间。通用单位接口沿用现有明确换算表，尚未引入 Pint/cf-xarray 的全套词汇。时间支持已解码日期/顺序检查、显式预期索引核验和精确闭区间选择，不推断频率、自动补缺时段或转换日历。GRIB/Zarr、重网格、混合层、提供方专用适配和 Meteostat 获取接口尚待后续阶段。
 
 多文件按实际时间排序；重复时间、不同历法、变量/单位冲突或非拼接维网格变化会报错。重复出现的静态 data variable 暂须单独读取，不能为比较大场而隐式计算；CF 静态坐标可作有限大小检查。
 

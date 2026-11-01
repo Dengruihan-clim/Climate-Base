@@ -1,7 +1,7 @@
 {
   "validated_on": "2026-11-01",
-  "package_version": "0.2.1",
-  "baseline_commit": "d0ad09e0ca1f9cc589469a0fe08a30f8e7be6601",
+  "package_version": "0.3.0",
+  "baseline_commit": "14378910e5ef88eb025b83a3c04429f1c48ce5e5",
   "working_tree_state": "validated_source_snapshot_prepared_for_publication",
   "interpreter": "C:\\ProgramData\\anaconda3\\python.exe",
   "python_version": "3.12.4",
@@ -16,18 +16,24 @@
     "pytest": "7.4.4",
     "setuptools": "69.5.1"
   },
-  "baseline_tests_passed": 42,
-  "tests_passed": 147,
+  "prior_release_tests_passed": 147,
+  "tests_passed": 283,
   "tests_failed": 0,
   "tests_skipped": 0,
-  "installed_wheel_tests_passed": 147,
+  "installed_wheel_tests_passed": 283,
   "installed_wheel_tests_failed": 0,
+  "installed_wheel_package_version": "0.3.0",
   "wheel_import_outside_source_tree": "passed",
   "wheel_module_cli": "passed",
   "sdist_and_wheel_build": "passed; wheel built from sdist",
   "ruff": "passed (src, tests, examples, tools)",
-  "documentation_local_links": "72 passed",
-  "test_scope": "Offline synthetic data; analytical values, metadata, Dask task counts, failure/resource tests and existing API compatibility",
+  "test_scope": "Offline synthetic analytical/CF/calendar/alignment/precision/lazy/resource tests and all existing API regressions",
+  "new_capabilities": [
+    "Physical 1-D pressure coordinates and bounds, Pa/hPa, shared legacy conversion/order kernel",
+    "Exact expected time index including endpoint gaps; inclusive calendar-aware time selection",
+    "Explicit boolean mask, exact labels, protected QC/CF structure and deferred integer precision guard",
+    "Preparation/configuration integration and synthetic composed example"
+  ],
   "commands": [
     "python -m pytest tests -q --basetemp <workspace-temporary-directory>",
     "python -m ruff check src tests examples tools",
@@ -35,30 +41,12 @@
     "python tools/check_wheel.py <workspace-build-directory>"
   ],
   "environment_note": "Missing netCDF4/cftime and build/lint tools installed in workspace-only target; selected Anaconda environment unchanged.",
-  "not_validated": [
-    "macOS runtime",
-    "Python 3.11 runtime",
-    "remote CI execution",
-    "Full ERA5 archive/full-grid execution and other real providers",
-    "GRIB/Zarr/xESMF/GeoCAT/WRF/Meteostat backends",
-    "performance speedup benchmarks"
-  ],
-  "limits": [
-    "Rectilinear 1-D latitude/longitude",
-    "Explicit existing unit table",
-    "No implicit frequency/gap inference or calendar conversion",
-    "Repeated static fields across files rejected",
-    "Size/mtime guards are not cryptographic snapshots",
-    "Legacy ndarray return boundaries compute; use lazy APIs for composition"
-  ],
-  "bundled_real_or_generated_data": false,
-  "third_party_implementation_copied": false,
-  "no_existing_hpc_scientific_workflows_executed": true,
   "hpc_validation": {
-    "validated_on": "2026-11-01",
+    "package_version": "0.3.0",
     "platform": "Linux x86_64, glibc 2.28, login node",
     "python_version": "3.13.5",
     "dependencies": {
+      "climate-preprocessing": "0.3.0",
       "numpy": "2.3.4",
       "pandas": "2.3.3",
       "xarray": "2026.2.0",
@@ -67,107 +55,117 @@
       "cftime": "1.6.5",
       "pytest": "8.4.2"
     },
-    "environment": "Dedicated venv reusing existing scientific dependencies; original environment unchanged",
-    "installed_package_tests_passed": 119,
+    "environment": "Dedicated versioned venv; prior environments unchanged; existing C++ runtime path retained",
+    "installed_package_tests_passed": 283,
     "installed_package_tests_failed": 0,
-    "runtime_source_hashes_matching_local_source": 23,
+    "runtime_source_hashes_matching_local": 23,
+    "uploaded_package_and_script_hashes_verified": true,
+    "limits": {
+      "dask_default_workers": 2,
+      "blas_threads": 1,
+      "original_compute_scheduler": "single-threaded"
+    },
     "real_data": {
       "product": "ERA5 monthly mean pressure-level V wind, RDA ds633.1",
       "source_years": [
         2003,
         2004
       ],
-      "selection_per_source": {
-        "time": 1,
-        "level": 2,
-        "latitude": 16,
-        "longitude": 32
+      "prior_merge_regression": {
+        "counts": {
+          "PASS": 5,
+          "EXPECTED_REJECTION": 1,
+          "FAIL": 0,
+          "NOT_RUN": 0
+        },
+        "peak_rss_kib": 453520,
+        "elapsed": "0:09.50"
       },
-      "pass": 17,
-      "expected_rejection": 2,
-      "fail": 0,
-      "not_applicable": 0,
-      "expected_rejections": [
-        "Original multi-file metadata conflicts",
-        "Existing output overwrite"
-      ],
-      "dask_workers": 2,
-      "blas_threads": 1,
-      "elapsed_seconds": 2.29,
-      "peak_rss_kib": 414980,
+      "pressure_time_mask": {
+        "counts": {
+          "PASS": 7,
+          "EXPECTED_REJECTION": 4,
+          "FAIL": 0,
+          "NOT_RUN": 0
+        },
+        "peak_rss_kib": 461284,
+        "elapsed": "0:02.74",
+        "sample_dimensions": {
+          "time": 1,
+          "pressure": 2,
+          "latitude": 16,
+          "longitude": 32
+        },
+        "checks": [
+          "pressure_time_region_graph_without_field_tasks",
+          "descending_Pa_and_time_selection_match_reference",
+          "mask_graph_without_field_tasks",
+          "mask_matches_exact_expected_values",
+          "masked_output_netcdf_roundtrip",
+          "pressure_Pa_hPa_reorder_matches_exact_values",
+          "expected_time_missing_endpoint_rejected",
+          "empty_time_selection_rejected",
+          "misaligned_mask_rejected",
+          "existing_output_rejected",
+          "original_sources_unchanged"
+        ]
+      },
+      "construction_field_tasks": 0,
+      "exact_sample_values_and_coordinates": true,
+      "pressure_unit_conversion": "Native hPa to descending Pa, back to ascending hPa; exact sampled values",
+      "mask_scope": "Explicit spatial validation condition, not inferred observational QC",
+      "roundtrip": "Values/missingness, units, calendar and source/operation provenance retained",
       "original_input_size_and_mtime_unchanged": true,
-      "scope": "Original metadata/lazy graphs and one contiguous hyperslab per source; transformations and roundtrips on derived real subsets",
-      "unit_scope": "Identity conversion of actual m s**-1 values",
-      "multifile_scope": "Original inputs rejected for verified attribute conflicts; explicitly harmonized derived shards concatenated successfully",
-      "performance_note": "Bounded functional validation, not a throughput or speedup benchmark"
+      "full_field_computed": false,
+      "performance_note": "Bounded functional verification; no throughput or speedup benchmark"
     },
-    "environment_remediation": "Replaced inherited netCDF4 1.7.3 only in the new venv; configured the existing Anaconda C++ runtime path. Precise NumPy ABI-warning and NetCDF-first import checks passed.",
+    "cli_inspect_pressure_and_expected_time": "passed on original annual files",
     "remaining_warnings": [
-      "xarray cftime_range deprecation in one synthetic test",
-      "Source time/utc_date storage chunks differ from the field time chunks; originals were not computed through those Dask graphs"
+      "Legacy synthetic cftime_range deprecation",
+      "Requested time chunks split small time/utc_date stored chunks; native V field chunks retained"
     ],
-    "private_reports": "Stored outside the public repository; no original or derived real-data files bundled",
-    "package_version": "0.2.0"
+    "private_reports": "Stored outside public repository; no private paths or real data bundled"
   },
-  "source_hash_comparison": "Original attribution retained in SOURCE_NOTES.md; current manifest regenerated by tools/update_manifest.py.",
+  "limits": [
+    "Rectilinear 1-D latitude/longitude; positive fixed pressure centers and positive 2-vertex bounds",
+    "Explicit existing unit table; no calendar conversion or frequency inference",
+    "Masks require boolean dtype, explicit targets/reason and exact indexed labels",
+    "Unrepresentable retained integer mask values fail at Dask execution",
+    "Repeated static fields across files rejected; size/mtime guards are not cryptographic snapshots",
+    "Legacy ndarray-return boundaries compute; use lazy APIs for composition"
+  ],
+  "not_validated": [
+    "macOS runtime",
+    "Python 3.11 runtime",
+    "remote CI execution",
+    "Full ERA5 archive/full-grid execution and other real providers",
+    "GRIB/Zarr/xESMF/GeoCAT/WRF/Meteostat backends",
+    "performance speedup benchmarks"
+  ],
   "observed_test_anomalies": [
     {
       "event": "One Windows installed-wheel verification stalled during the synthetic CLI roundtrip; its identified child process was terminated.",
       "followup": "Subsequent full source and installed-wheel runs each passed all 115 tests. Six same-process failure-cleanup/source-change/CLI cycles passed all 18 invocations.",
       "root_cause": "Not reproduced or identified; no claim of a fixed scheduler/library bug.",
       "diagnostics": "Wheel validation enables faulthandler at 30 seconds, a 300-second test process timeout, and CI jobs have a 15-minute timeout."
+    },
+    {
+      "version": "0.3.0",
+      "event": "Initial private real-data harness omitted the explicit horizontal coordinate map required by source metadata",
+      "resolution": "Corrected harness options and reran in a new output directory; runtime library unchanged; final 7 passes and 4 expected rejections",
+      "original_attempt_retained": true
     }
   ],
-  "installed_wheel_package_version": "0.2.1",
-  "metadata_policy_validation": {
-    "source_tests_passed": 147,
-    "source_tests_failed": 0,
-    "new_policy_tests_passed": 24,
-    "policy": "strict by default; explicit preserve_sources for documented per-source descriptive attributes",
-    "package_version": "0.2.1",
-    "installed_wheel_tests_passed": 147,
-    "hpc_installed_tests_passed": 147,
-    "hpc_installed_tests_failed": 0,
-    "hpc_real_original_merge": {
-      "source_years": [
-        2003,
-        2004
-      ],
-      "logical_dimensions": {
-        "time": 24,
-        "level": 37,
-        "latitude": 721,
-        "longitude": 1440
-      },
-      "construction_field_tasks": 0,
-      "computed_sample_dimensions": {
-        "time": 2,
-        "level": 2,
-        "latitude": 16,
-        "longitude": 32
-      },
-      "sample_comparison": "exact values, coordinates and utc_date against previously validated real subsets",
-      "passed": 5,
-      "expected_strict_rejection": 1,
-      "failed": 0,
-      "not_run": 0,
-      "original_files_unchanged": true,
-      "sample_output_provenance_roundtrip": "passed",
-      "elapsed_seconds": 2.63,
-      "peak_rss_kib": 453332,
-      "scheduler": "Dask threads/2 by default; original sample compute single-threaded to bound native-chunk memory",
-      "full_24_month_field_computed": false
-    },
-    "hpc_cli_inspect": "passed on original two annual files with preserve_sources",
-    "hpc_runtime_source_hashes_matching_local": 23,
-    "source_attributes_policy": "Known file-scoped history/dates and descriptive ranges recorded per input; units, grids, calendars, CF links and unknown attributes remain strict",
-    "prior_hpc_validation_note": "The hpc_validation section above records the separate 0.2.0 run; this section records the 0.2.1 fix."
-  },
+  "bundled_real_or_generated_data": false,
+  "third_party_implementation_copied": false,
+  "no_existing_hpc_scientific_workflows_executed": true,
   "publication_checks": {
-    "package_text_line_endings": "LF; .gitattributes included in source distribution",
-    "runtime_sources_matching_tested_hpc_wheel_after_lf_normalization": 23,
-    "runtime_behavior_changes_since_hpc_validation": false,
-    "validation_timing": "Pre-publication snapshot; GitHub Actions is supplied as an inactive template",
-    "github_actions": "Definition retained as docs/preprocessing/preprocessing-ci.yml.example; not enabled in this update"
+    "package_text_line_endings": "LF; .gitattributes included in sdist",
+    "github_actions": "Inactive docs/preprocessing/preprocessing-ci.yml.example; not enabled"
+  },
+  "previous_release_validation": {
+    "package_version": "0.2.1",
+    "commit": "14378910e5ef88eb025b83a3c04429f1c48ce5e5",
+    "source_wheel_and_hpc_tests_passed_each": 147
   }
 }
