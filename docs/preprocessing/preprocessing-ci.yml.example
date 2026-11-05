@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+env:
+  DASK_SCHEDULER: threads
+  DASK_NUM_WORKERS: '2'
+
 jobs:
   test:
     timeout-minutes: 15
@@ -47,4 +51,63 @@ jobs:
         with:
           python-version: '3.11'
       - run: python -m pip install 'numpy==1.26.4' 'pandas==2.2.2' 'xarray==2023.6.0' 'dask[array]==2024.5.0' '.[test]'
+      - run: python -m pytest tests -q
+
+  optional-formats:
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Preprocessing
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install '.[dev,grib,zarr]'
+      - run: python -c "import cfgrib, eccodes, zarr"
+      - run: python -m pytest tests -q
+
+  native-regrid:
+    # Inactive template: this job has not run as GitHub Actions. ESMPy/ESMF
+    # needs a supported native environment; a pip extra alone is insufficient.
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -el {0}
+        working-directory: Preprocessing
+    steps:
+      - uses: actions/checkout@v4
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: preprocessing-regrid
+          python-version: '3.12'
+          channels: conda-forge
+          channel-priority: strict
+          auto-activate-base: false
+      - run: conda install -y xesmf=0.9.2 esmpy=8.9.1 netcdf4 cftime pytest python-build ruff
+      - run: python -m pip install '.[dev,grib,zarr,regrid,vertical]' 'geocat-comp==2026.4.0'
+      - run: python -c "from climate_preprocessing.regrid._xesmf import backend_versions; print(backend_versions())"
+      - run: python -m pytest tests -q
+      - run: python -m build
+      - run: python tools/check_wheel.py dist
+
+  optional-vertical:
+    # MetPy is the runtime kernel. GeoCAT is installed only for reference parity.
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: Preprocessing
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install '.[dev,vertical]' 'geocat-comp==2026.4.0'
+      - run: python -c "import metpy, geocat.comp; print(metpy.__version__)"
       - run: python -m pytest tests -q

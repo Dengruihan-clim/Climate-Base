@@ -1,8 +1,24 @@
 {
+  "baseline_commit": "1e48f285ee5760ac42253a6c6ab01d91b29f880f",
+  "environment_note": "Windows supplemental dependencies are workspace-only; base Anaconda environment unchanged",
+  "wheel_import_outside_source_tree": "passed",
+  "wheel_module_cli": "passed",
+  "sdist_and_wheel_build": "passed; wheel built from sdist",
+  "ruff": "passed (src, tests, examples, tools)",
+  "commands": [
+    "C:\\ProgramData\\anaconda3\\python.exe -m pytest tests -q (with workspace-only optional dependencies and Dask threads=2)",
+    "C:\\ProgramData\\anaconda3\\python.exe -m ruff check src tests examples tools",
+    "C:\\ProgramData\\anaconda3\\python.exe -m build --no-isolation --outdir <workspace-build-directory>",
+    "C:\\ProgramData\\anaconda3\\python.exe tools/check_wheel.py <workspace-build-directory>",
+    "HPC: install candidate wheel with --no-deps; pip check; run tests from matching sdist outside src; bounded ERA5 and example/CLI checks"
+  ],
+  "publication_checks": {
+    "package_text_line_endings": "LF",
+    "github_actions": "Inactive template only",
+    "github_upload": "Repository update authorized on 2026-11-05; this revision targets origin/main"
+  },
   "validated_on": "2026-11-01",
-  "package_version": "0.3.0",
-  "baseline_commit": "14378910e5ef88eb025b83a3c04429f1c48ce5e5",
-  "working_tree_state": "validated_source_snapshot_prepared_for_publication",
+  "package_version": "0.7.0",
   "interpreter": "C:\\ProgramData\\anaconda3\\python.exe",
   "python_version": "3.12.4",
   "platform": "Windows",
@@ -14,158 +30,1305 @@
     "netCDF4": "1.7.5.1.post1",
     "cftime": "1.6.6.1",
     "pytest": "7.4.4",
-    "setuptools": "69.5.1"
+    "setuptools": "69.5.1",
+    "cfgrib": "0.9.15.1",
+    "eccodes": "2.50.0",
+    "zarr": "2.18.7",
+    "numcodecs": "0.15.1",
+    "MetPy": "1.7.1",
+    "Pint": "0.24.4",
+    "geocat-comp": "2026.4.0",
+    "scipy": "1.13.1"
   },
-  "prior_release_tests_passed": 147,
-  "tests_passed": 283,
-  "tests_failed": 0,
-  "tests_skipped": 0,
-  "installed_wheel_tests_passed": 283,
-  "installed_wheel_tests_failed": 0,
-  "installed_wheel_package_version": "0.3.0",
-  "wheel_import_outside_source_tree": "passed",
-  "wheel_module_cli": "passed",
-  "sdist_and_wheel_build": "passed; wheel built from sdist",
-  "ruff": "passed (src, tests, examples, tools)",
-  "test_scope": "Offline synthetic analytical/CF/calendar/alignment/precision/lazy/resource tests and all existing API regressions",
+  "source_suite": {
+    "tests": 740,
+    "errors": 0,
+    "failures": 0,
+    "skipped": 26,
+    "passed": 714
+  },
+  "core_only_suite": {
+    "tests": 740,
+    "errors": 0,
+    "failures": 0,
+    "skipped": 138,
+    "passed": 602
+  },
+  "installed_wheel_suite": {
+    "tests": 740,
+    "errors": 0,
+    "failures": 0,
+    "skipped": 26,
+    "passed": 714
+  },
+  "windows_skips": {
+    "prior_native_xesmf_esmpy_cases": 24,
+    "vertical_horizontal_composition_requires_native_xesmf": 1,
+    "zarr_symlink_privileges": 1
+  },
+  "core_only_skips": "138 optional backend cases, including adapter+Zarr and adapter+vertical composition; skips are not backend verification",
+  "execution_limits": {
+    "dask_scheduler": "threads",
+    "dask_num_workers": 2
+  },
   "new_capabilities": [
-    "Physical 1-D pressure coordinates and bounds, Pa/hPa, shared legacy conversion/order kernel",
-    "Exact expected time index including endpoint gaps; inclusive calendar-aware time selection",
-    "Explicit boolean mask, exact labels, protected QC/CF structure and deferred integer precision guard",
-    "Preparation/configuration integration and synthetic composed example"
+    "Explicit adapt_product profiles for ERA5 monthly pressure levels, MERRA-2 M2IMNPASM 5.12.4, and JRA-3Q GDEX monthly isobaric analyses",
+    "Explicit canonical-role to source-variable mapping, four physically validated coordinate axes, unchanged field values/units/order",
+    "Exact JSON scalar-label selection for known expver/member/number/realization and additional mapped-field dimensions, including singleton/scalar streams",
+    "Available identity/parameter/statistic/vector-frame conflicts rejected; missing identity evidence remains unverified rather than authenticated",
+    "Monthly record uniqueness within and across files, fixed-pressure monotonicity and explicit unit evidence; no inferred averaging windows or statistics",
+    "Per-input adaptation before strict NetCDF combination, retained separate provenance, exact grid/calendar/schema compatibility and raw preselection descriptive-range records",
+    "Shared CF references renamed; cell-method comments preserved; selection-invalid ranges/shape encodings audited; close callbacks and lazy execution retained",
+    "Preparation/JSON/CLI composition for decoded monthly CF NetCDF or derived local Zarr, with raw GRIB+adapter rejected"
   ],
-  "commands": [
-    "python -m pytest tests -q --basetemp <workspace-temporary-directory>",
-    "python -m ruff check src tests examples tools",
-    "python -m build --no-isolation --outdir <workspace-build-directory>",
-    "python tools/check_wheel.py <workspace-build-directory>"
-  ],
-  "environment_note": "Missing netCDF4/cftime and build/lint tools installed in workspace-only target; selected Anaconda environment unchanged.",
+  "product_profiles": {
+    "era5-monthly-pressure-levels": {
+      "representation": "Whole-month averaged pressure-level reanalysis, moda/monthly_averaged_reanalysis; decoded CF rectilinear axes",
+      "default_coordinates": [
+        "time",
+        "level",
+        "latitude",
+        "longitude"
+      ],
+      "numeric_validation": "Original bounded ERA5 V sample plus synthetic stream/metadata fixtures"
+    },
+    "merra2-m2imnpasm-5.12.4": {
+      "representation": "M2IMNPASM 5.12.4 / instM_3d_asm_Np monthly mean instantaneous assimilation pressure-level fields",
+      "default_coordinates": [
+        "time",
+        "lev",
+        "lat",
+        "lon"
+      ],
+      "numeric_validation": "Synthetic schema fixtures only; original product values not validated",
+      "height_constraint": "geopotential_height requires existing explicit standard_name=geopotential_height; units m/gpm alone do not establish the meaning of ASM layer heights",
+      "ad_hoc_standard_names": "Unknown legacy non-CF declarations are rejected; no undocumented aliases guessed"
+    },
+    "jra3q-monthly-isobaric-analysis": {
+      "representation": "GDEX d640002 anl_p/anl_p125 analysis monthly mean CF NetCDF, including GDEX-converted regular Gaussian axes",
+      "default_coordinates": [
+        "time",
+        "pressure_level",
+        "lat",
+        "lon"
+      ],
+      "numeric_validation": "Synthetic schema fixtures and official header checks only; original field values not validated"
+    }
+  },
   "hpc_validation": {
-    "package_version": "0.3.0",
-    "platform": "Linux x86_64, glibc 2.28, login node",
-    "python_version": "3.13.5",
+    "platform": "Linux x86_64, login node, isolated conda prefix",
+    "python_version": "3.12.16",
+    "suite": {
+      "tests": 740,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 0,
+      "passed": 740
+    },
+    "tested_artifacts": {
+      "climate_preprocessing-0.7.0-py3-none-any.whl": "25a8285bc91793a65ec17f6bc4368b0a6142d99db6ccf4dc4f76a69a63306465",
+      "climate_preprocessing-0.7.0.tar.gz": "9f631b3d8b5510f4d81a9bb1f15089630b448bb8ad1861b38be33705fd63c39c"
+    },
+    "steps": [
+      {
+        "name": "install",
+        "exit_code": 0
+      },
+      {
+        "name": "pip-check",
+        "exit_code": 0
+      },
+      {
+        "name": "pytest",
+        "exit_code": 0
+      },
+      {
+        "name": "realdata",
+        "exit_code": 0
+      },
+      {
+        "name": "example",
+        "exit_code": 0
+      },
+      {
+        "name": "environment",
+        "exit_code": 0
+      },
+      {
+        "name": "installed-metadata",
+        "exit_code": 0
+      },
+      {
+        "name": "cli-help",
+        "exit_code": 0
+      }
+    ],
     "dependencies": {
-      "climate-preprocessing": "0.3.0",
-      "numpy": "2.3.4",
-      "pandas": "2.3.3",
-      "xarray": "2026.2.0",
-      "dask": "2025.11.0",
+      "climate-preprocessing": "0.7.0",
+      "numpy": "2.5.4",
+      "pandas": "3.1.0",
+      "xarray": "2026.7.0",
+      "dask": "2026.8.0",
       "netCDF4": "1.7.5.1.post1",
       "cftime": "1.6.5",
-      "pytest": "8.4.2"
+      "pytest": "9.2.0",
+      "setuptools": "84.2.1",
+      "cfgrib": "0.9.15.1",
+      "eccodes": "2.50.0",
+      "zarr": "2.18.7",
+      "numcodecs": "0.15.2",
+      "MetPy": "1.7.1",
+      "Pint": "0.26.2",
+      "geocat-comp": "2026.4.0",
+      "scipy": "1.18.1",
+      "xesmf": "0.9.2",
+      "esmpy": "8.9.1",
+      "cf_xarray": "0.11.3",
+      "sparse": "0.19.3",
+      "numba": "0.68.0",
+      "shapely": "2.2.0"
     },
-    "environment": "Dedicated versioned venv; prior environments unchanged; existing C++ runtime path retained",
-    "installed_package_tests_passed": 283,
-    "installed_package_tests_failed": 0,
-    "runtime_source_hashes_matching_local": 23,
-    "uploaded_package_and_script_hashes_verified": true,
-    "limits": {
-      "dask_default_workers": 2,
-      "blas_threads": 1,
-      "original_compute_scheduler": "single-threaded"
+    "native_versions": {
+      "ESMPy": "8.9.1",
+      "HDF5": "1.14.6",
+      "ecCodes": "2.50.0",
+      "netCDF-C": "4.10.1"
     },
-    "real_data": {
-      "product": "ERA5 monthly mean pressure-level V wind, RDA ds633.1",
-      "source_years": [
-        2003,
-        2004
+    "runtime_modules_byte_identical_to_local": 38,
+    "source_test_example_tool_python_files_byte_identical": 77,
+    "installed_wheel_metadata_byte_identity": "PASS: METADATA, entry_points.txt, WHEEL, top_level.txt",
+    "dependency_versions_unchanged_from_p6": true,
+    "environment_preparation": "Offline copy-mode clone of P6; clone restored old conda netCDF4 runtime, then the previously verified offline ABI3 wheel restored the P6 active version before testing",
+    "active_netcdf4": {
+      "module_version": "1.7.5.1.post1",
+      "metadata_version": "1.7.5.1.post1"
+    },
+    "duplicate_metadata_note": "Active netCDF4 1.7.5.1.post1 and stale conda 1.7.4 metadata both recorded privately; no post-validation cleanup or dependency upgrade",
+    "threads": 2,
+    "new_environment_only": true,
+    "raw_logs_and_environment_lock": "Stored privately outside public repository",
+    "example_and_generated_cli": {
+      "version": "0.7.0",
+      "scope": "Synthetic shipped naming-contract examples; not original provider data",
+      "steps": [
+        {
+          "name": "example",
+          "exit_code": 0
+        },
+        {
+          "name": "inspect-0",
+          "exit_code": 0
+        },
+        {
+          "name": "prepare-0",
+          "exit_code": 0
+        },
+        {
+          "name": "inspect-1",
+          "exit_code": 0
+        },
+        {
+          "name": "prepare-1",
+          "exit_code": 0
+        },
+        {
+          "name": "inspect-2",
+          "exit_code": 0
+        },
+        {
+          "name": "prepare-2",
+          "exit_code": 0
+        }
       ],
-      "prior_merge_regression": {
-        "counts": {
-          "PASS": 5,
-          "EXPECTED_REJECTION": 1,
-          "FAIL": 0,
-          "NOT_RUN": 0
+      "profiles": [
+        {
+          "product": "era5-monthly-pressure-levels",
+          "API_analytic_value": 7.0,
+          "CLI_analytic_value": 7.0,
+          "API_CLI_maximum_absolute_difference": 0.0,
+          "inspect_did_not_write": true,
+          "CLI_latitude_normalized": true
         },
-        "peak_rss_kib": 453520,
-        "elapsed": "0:09.50"
-      },
-      "pressure_time_mask": {
-        "counts": {
-          "PASS": 7,
-          "EXPECTED_REJECTION": 4,
-          "FAIL": 0,
-          "NOT_RUN": 0
+        {
+          "product": "merra2-m2imnpasm-5.12.4",
+          "API_analytic_value": 7.0,
+          "CLI_analytic_value": 7.0,
+          "API_CLI_maximum_absolute_difference": 0.0,
+          "inspect_did_not_write": true,
+          "CLI_latitude_normalized": true
         },
-        "peak_rss_kib": 461284,
-        "elapsed": "0:02.74",
-        "sample_dimensions": {
-          "time": 1,
-          "pressure": 2,
-          "latitude": 16,
-          "longitude": 32
-        },
-        "checks": [
-          "pressure_time_region_graph_without_field_tasks",
-          "descending_Pa_and_time_selection_match_reference",
-          "mask_graph_without_field_tasks",
-          "mask_matches_exact_expected_values",
-          "masked_output_netcdf_roundtrip",
-          "pressure_Pa_hPa_reorder_matches_exact_values",
-          "expected_time_missing_endpoint_rejected",
-          "empty_time_selection_rejected",
-          "misaligned_mask_rejected",
-          "existing_output_rejected",
-          "original_sources_unchanged"
-        ]
-      },
-      "construction_field_tasks": 0,
-      "exact_sample_values_and_coordinates": true,
-      "pressure_unit_conversion": "Native hPa to descending Pa, back to ascending hPa; exact sampled values",
-      "mask_scope": "Explicit spatial validation condition, not inferred observational QC",
-      "roundtrip": "Values/missingness, units, calendar and source/operation provenance retained",
-      "original_input_size_and_mtime_unchanged": true,
-      "full_field_computed": false,
-      "performance_note": "Bounded functional verification; no throughput or speedup benchmark"
+        {
+          "product": "jra3q-monthly-isobaric-analysis",
+          "API_analytic_value": 7.0,
+          "CLI_analytic_value": 7.0,
+          "API_CLI_maximum_absolute_difference": 0.0,
+          "inspect_did_not_write": true,
+          "CLI_latitude_normalized": true
+        }
+      ],
+      "status": "PASS"
     },
-    "cli_inspect_pressure_and_expected_time": "passed on original annual files",
-    "remaining_warnings": [
-      "Legacy synthetic cftime_range deprecation",
-      "Requested time chunks split small time/utc_date stored chunks; native V field chunks retained"
-    ],
-    "private_reports": "Stored outside public repository; no private paths or real data bundled"
+    "test_warnings": 105
   },
-  "limits": [
-    "Rectilinear 1-D latitude/longitude; positive fixed pressure centers and positive 2-vertex bounds",
-    "Explicit existing unit table; no calendar conversion or frequency inference",
-    "Masks require boolean dtype, explicit targets/reason and exact indexed labels",
-    "Unrepresentable retained integer mask values fail at Dask execution",
-    "Repeated static fields across files rejected; size/mtime guards are not cryptographic snapshots",
-    "Legacy ndarray-return boundaries compute; use lazy APIs for composition"
+  "real_data_validation": {
+    "product": "ERA5 monthly mean pressure-level V; January 2004",
+    "scope": "1 time x 3 levels (1,2,3 hPa) x 16 latitude x 32 longitude",
+    "storage_limit": "The original storage chunk may be larger than the materialized sample.",
+    "fixture_limitations": "expver/member dimensions, bad units and hybrid vertical metadata are synthetic changes over real sample values, not original ensemble/hybrid products. MERRA2/JRA3Q original source files are not accessible in the authorized account and are not validated here.",
+    "passed": 10,
+    "expected_rejections": 4,
+    "failures": 0,
+    "cases": [
+      {
+        "name": "adaptation_graph_and_names",
+        "status": "PASS",
+        "details": {
+          "field_tasks_during_adaptation": 0,
+          "canonical_dimensions": {
+            "time": 1,
+            "pressure": 3,
+            "latitude": 16,
+            "longitude": 32
+          },
+          "source_not_mutated": true,
+          "coordinate_values_and_order_unchanged": true
+        }
+      },
+      {
+        "name": "independent_original_values",
+        "status": "PASS",
+        "details": {
+          "maximum_absolute_error": 0.0,
+          "independent_original_xarray_selection": true
+        }
+      },
+      {
+        "name": "units_calendar_auxiliary_and_provenance",
+        "status": "PASS",
+        "details": {
+          "original_field_and_pressure_units": true,
+          "gregorian_calendar": true,
+          "utc_date_values_and_units_preserved": true,
+          "source_global_metadata_and_adapter_provenance": true
+        }
+      },
+      {
+        "name": "direct_original_prepare_graph_and_values",
+        "status": "PASS",
+        "details": {
+          "field_tasks_during_preparation": 0,
+          "canonical_names_and_sorted_latitude": true,
+          "values_exact": true
+        }
+      },
+      {
+        "name": "bounded_API_roundtrip",
+        "status": "PASS",
+        "details": {
+          "bounded_original_values_used_for_cli": true,
+          "API_roundtrip_exact_with_auxiliary_and_calendar": true
+        }
+      },
+      {
+        "name": "CLI_inspect_without_field_tasks",
+        "status": "PASS",
+        "details": {
+          "field_tasks": 0,
+          "no_output_written": true,
+          "product_reported": "era5-monthly-pressure-levels"
+        }
+      },
+      {
+        "name": "CLI_prepare_matches_API",
+        "status": "PASS",
+        "details": {
+          "API_CLI_maximum_absolute_error": 0.0,
+          "coordinate_auxiliary_units_calendar_exact": true
+        }
+      },
+      {
+        "name": "synthetic_expver_requires_explicit_label",
+        "status": "EXPECTED_REJECTION",
+        "error": "Explicit selectors are required for version/member/extra axes: ['expver']"
+      },
+      {
+        "name": "synthetic_expver_explicit_label",
+        "status": "PASS",
+        "details": {
+          "fixture": "synthetic expver labels [1, 5] with +11 field offset on selected second label",
+          "explicit_label": 5,
+          "field_tasks_during_adaptation": 0,
+          "selected_values_exact": true
+        }
+      },
+      {
+        "name": "synthetic_member_requires_explicit_label",
+        "status": "EXPECTED_REJECTION",
+        "error": "Explicit selectors are required for version/member/extra axes: ['member']"
+      },
+      {
+        "name": "synthetic_member_explicit_label",
+        "status": "PASS",
+        "details": {
+          "fixture": "synthetic member labels [0, 2] with +11 field offset on selected second label",
+          "explicit_label": 2,
+          "field_tasks_during_adaptation": 0,
+          "selected_values_exact": true
+        }
+      },
+      {
+        "name": "synthetic_incompatible_wind_units_rejected",
+        "status": "EXPECTED_REJECTION",
+        "error": "Units 'K' are not a supported physical dimension for northward_wind"
+      },
+      {
+        "name": "synthetic_hybrid_vertical_semantics_rejected",
+        "status": "EXPECTED_REJECTION",
+        "error": "Conflicting pressure standard_name 'atmosphere_hybrid_sigma_pressure_coordinate'"
+      },
+      {
+        "name": "original_source_unchanged",
+        "status": "PASS",
+        "details": {
+          "source_size_and_mtime_ns_unchanged": true,
+          "full_source_hash_computed": false
+        }
+      }
+    ],
+    "independent_original_and_api_cli_max_absolute_error": 0.0,
+    "original_modified": false,
+    "source_integrity_check": "File size and nanosecond mtime before/after, not a full-source SHA256 scan",
+    "full_field_computed": false,
+    "speedup_measured": false
+  },
+  "scientific_validation": [
+    "101 adapter contract cases plus 20 pipeline/IO/CLI cases, including independently encoded label-selection fields and source nonmutation",
+    "Exact non-positional member/expver selection, scalar retention, no coalescing/averaging and no field tasks during adaptation or inspect",
+    "Physical-unit/standard-name conflicts, geopotential versus geopotential height, MERRA explicit height semantics, documented JRA geographic vector flags",
+    "Original monthly timestamps/calendar and time encoding retained; distinct dates within the same month rejected within and across files",
+    "CF links in attrs/encoding, parenthesized cell-method comments, preselection source metadata, failure-close callbacks and NetCDF/Zarr roundtrips",
+    "Actual optional vertical and horizontal backends included in HPC regression; prior P4-P6 real-data acceptance remains historical rather than rerun"
+  ],
+  "boundaries": [
+    "Only three named monthly fixed-pressure representations; callers declare product and physical roles; incomplete metadata is not provider authentication",
+    "Only explicitly mapped real numeric physical fields with exactly four remaining axes are claimed adapted; other fields are preserved",
+    "Self-dimension 1D decoded time/pressure/latitude/longitude axes, explicit units, distinct bounded geometry; region subsets allowed",
+    "No silent stream coalescing/member means, unit conversion, geopotential-to-height conversion, statistical aggregation, filling or averaging-window inference",
+    "At most one record per year/month is a structural check, not proof of full-month sampling or temporal completeness",
+    "Raw GRIB adaptation, forecast products, monthly diurnal means, standard deviations, surface fields as 4D pressure fields and hybrid-model-level product profiles are unsupported",
+    "P4-P6 limits continue; original MERRA-2/JRA-3Q data were unavailable under the authorized access and have not received numeric acceptance"
   ],
   "not_validated": [
-    "macOS runtime",
-    "Python 3.11 runtime",
-    "remote CI execution",
-    "Full ERA5 archive/full-grid execution and other real providers",
-    "GRIB/Zarr/xESMF/GeoCAT/WRF/Meteostat backends",
-    "performance speedup benchmarks"
+    "macOS and Python 3.11",
+    "native xESMF/ESMPy on Windows",
+    "GitHub Actions execution",
+    "full ERA5 archives or performance speedup",
+    "original MERRA-2 or JRA-3Q field values",
+    "original provider GRIB or hybrid/model-level products",
+    "Zarr v3/cloud, station providers and undocumented product/metadata variants"
+  ],
+  "excluded_scope": [
+    "WRF adapters and WRF runtime dependencies removed from implementation plan at user request"
   ],
   "observed_test_anomalies": [
     {
-      "event": "One Windows installed-wheel verification stalled during the synthetic CLI roundtrip; its identified child process was terminated.",
-      "followup": "Subsequent full source and installed-wheel runs each passed all 115 tests. Six same-process failure-cleanup/source-change/CLI cycles passed all 18 invocations.",
-      "root_cause": "Not reproduced or identified; no claim of a fixed scheduler/library bug.",
-      "diagnostics": "Wheel validation enables faulthandler at 30 seconds, a 300-second test process timeout, and CI jobs have a 15-minute timeout."
+      "event": "Initial adapter moved decoded time units from encoding to attrs, causing epoch comparisons and NetCDF write failures",
+      "resolution": "Preserve time encoding; regression tests verify raw time labels/calendar and API/CLI roundtrip. Final candidate2 suites passed"
     },
     {
-      "version": "0.3.0",
-      "event": "Initial private real-data harness omitted the explicit horizontal coordinate map required by source metadata",
-      "resolution": "Corrected harness options and reran in a new output directory; runtime library unchanged; final 7 passes and 4 expected rejections",
-      "original_attempt_retained": true
+      "event": "Final scientific audit found MERRA geopotential-height declarations without physical-semantic metadata were too permissive",
+      "resolution": "Require existing explicit geopotential_height standard_name; add rejection and identity tests. Candidate1 was not installed on HPC; all final counts identify candidate2"
+    },
+    {
+      "event": "Offline conda clone restored old netCDF4 runtime files while pip metadata described the verified ABI3 wheel",
+      "resolution": "Restore the previously verified ABI3 wheel only in the new prefix, then verify active versions and unchanged P6 dependency baseline before testing"
     }
   ],
+  "artifact_identity": "The 2026-11-01 candidate2 runtime, installed wheel and sdist are byte matched. The 2026-11-05 repository update changes publication documentation only; runtime/tests/examples/tools and dependency/entrypoint metadata are verified against that candidate. Documentation rebuilds are not claimed to have been redeployed to HPC.",
   "bundled_real_or_generated_data": false,
   "third_party_implementation_copied": false,
-  "no_existing_hpc_scientific_workflows_executed": true,
-  "publication_checks": {
-    "package_text_line_endings": "LF; .gitattributes included in sdist",
-    "github_actions": "Inactive docs/preprocessing/preprocessing-ci.yml.example; not enabled"
+  "next_phase": "P8 station providers and explicit acquisition/catalog/cache orchestration; WRF excluded",
+  "historical_releases": {
+    "0.4.0": {
+      "validated_on": "2026-11-01",
+      "package_version": "0.4.0",
+      "baseline_commit": "1e48f285ee5760ac42253a6c6ab01d91b29f880f",
+      "working_tree_state": "local_uncommitted_unpublished_user_requested_no_upload",
+      "interpreter": "C:\\ProgramData\\anaconda3\\python.exe",
+      "python_version": "3.12.4",
+      "platform": "Windows",
+      "dependencies": {
+        "numpy": "1.26.4",
+        "pandas": "2.2.2",
+        "xarray": "2023.6.0",
+        "dask": "2024.5.0",
+        "netCDF4": "1.7.5.1.post1",
+        "cftime": "1.6.6.1",
+        "pytest": "7.4.4",
+        "setuptools": "69.5.1",
+        "cfgrib": "0.9.15.1",
+        "eccodes": "2.50.0",
+        "zarr": "2.18.7",
+        "numcodecs": "0.15.1"
+      },
+      "native_eccodes": "2.50.0",
+      "source_suite": {
+        "tests": 394,
+        "errors": 0,
+        "failures": 0,
+        "skipped": 1,
+        "passed": 393
+      },
+      "core_only_suite": {
+        "tests": 394,
+        "errors": 0,
+        "failures": 0,
+        "skipped": 68,
+        "passed": 326
+      },
+      "installed_wheel_suite": {
+        "tests": 394,
+        "errors": 0,
+        "failures": 0,
+        "skipped": 1,
+        "passed": 393
+      },
+      "windows_skip": "Zarr symlink/reparse replacement test requires symbolic-link privileges; passed on Linux HPC",
+      "core_only_skips": "Optional backend cases; these skips are not evidence of backend support",
+      "wheel_import_outside_source_tree": "passed",
+      "wheel_module_cli": "passed",
+      "sdist_and_wheel_build": "passed; wheel built from sdist",
+      "ruff": "passed (src, tests, examples, tools)",
+      "test_scope": "All previous API regressions plus actual optional backend, CF calendar/precision, lazy graph, failure/publication and source-change tests",
+      "new_capabilities": [
+        "Optional strict cfgrib/ecCodes group inspection and lazy single-group reading with preserved forecast axes/windows",
+        "Local consolidated Zarr v2 root groups with completion manifest, metadata/accessed-file guards and non-overwriting publication",
+        "Explicit input_format/input_options/output_format in preparation/config/CLI; unchanged NetCDF defaults",
+        "Bounded cftime object chunks; shared date/bounds/climatology encoding and exact prepublication date roundtrip checks"
+      ],
+      "commands": [
+        "python -m pytest tests -q --basetemp <workspace-temporary-directory>",
+        "python -m ruff check src tests examples tools",
+        "python -m build --no-isolation --outdir <workspace-build-directory>",
+        "python tools/check_wheel.py <workspace-build-directory>"
+      ],
+      "environment_note": "Workspace-only supplemental dependency targets; selected Anaconda environment unchanged",
+      "hpc_validation": {
+        "package_version": "0.4.0",
+        "platform": "Linux x86_64, glibc 2.28, login node",
+        "python_version": "3.13.5",
+        "dependencies": {
+          "climate-preprocessing": "0.4.0",
+          "numpy": "2.3.4",
+          "pandas": "2.3.3",
+          "xarray": "2026.2.0",
+          "dask": "2025.11.0",
+          "netCDF4": "1.7.5.1.post1",
+          "cftime": "1.6.5",
+          "pytest": "8.4.2",
+          "cfgrib": "0.9.15.1",
+          "eccodes": "2.50.0",
+          "zarr": "2.18.7",
+          "numcodecs": "0.15.1"
+        },
+        "native_eccodes": "2.44.0",
+        "environment": "Dedicated versioned venv reusing existing scientific stack; prior environments unchanged",
+        "installed_package_suite": {
+          "tests": 394,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "passed": 394
+        },
+        "runtime_source_hashes_matching_local": 26,
+        "uploaded_package_and_script_hashes_verified": true,
+        "limits": {
+          "dask_default_workers": 2,
+          "blas_threads": 1,
+          "original_compute_scheduler": "single-threaded"
+        },
+        "real_data": {
+          "product": "ERA5 monthly mean pressure-level V wind, RDA ds633.1",
+          "source_years": [
+            2003,
+            2004
+          ],
+          "prior_merge_regression": {
+            "counts": {
+              "PASS": 5,
+              "EXPECTED_REJECTION": 1,
+              "FAIL": 0,
+              "NOT_RUN": 0
+            },
+            "peak_rss_kib": 453656,
+            "elapsed": "0:02.43"
+          },
+          "pressure_time_mask": {
+            "counts": {
+              "PASS": 7,
+              "EXPECTED_REJECTION": 4,
+              "FAIL": 0,
+              "NOT_RUN": 0
+            },
+            "peak_rss_kib": 463484,
+            "elapsed": "0:02.87"
+          },
+          "optional_formats": {
+            "counts": {
+              "PASS": 6,
+              "EXPECTED_REJECTION": 3,
+              "FAIL": 0,
+              "NOT_RUN": 0
+            },
+            "peak_rss_kib": 555428,
+            "elapsed": "0:03.66",
+            "sample_dimensions": {
+              "time": 1,
+              "pressure": 2,
+              "latitude": 16,
+              "longitude": 32
+            },
+            "grib_fixture": "Derived GRIB2 from actual January 2004 NetCDF values, IEEE float64, zero packing error; not an independently obtained original GRIB product",
+            "time_semantics": "January monthly-mean window 0..744 h; reference January 1 and valid time February 1 retained; no aggregation",
+            "checks": [
+              "original_era5_sample_matches_reference",
+              "era5_netcdf_to_zarr_exact_roundtrip",
+              "real_sample_encoded_as_derived_mean_grib2",
+              "grib_read_matches_independent_ecCodes_and_keeps_mean_window",
+              "derived_grib_to_zarr_preserves_forecast_axes",
+              "incomplete_zarr_rejected",
+              "missing_zarr_chunk_rejected",
+              "existing_zarr_destination_rejected",
+              "original_input_unchanged"
+            ]
+          },
+          "combined_counts": {
+            "PASS": 18,
+            "EXPECTED_REJECTION": 8,
+            "FAIL": 0,
+            "NOT_RUN": 0
+          },
+          "construction_field_tasks": 0,
+          "exact_sample_values_and_coordinates": true,
+          "original_input_size_and_mtime_unchanged": true,
+          "full_field_computed": false,
+          "performance_note": "Bounded functional verification; no throughput or speedup benchmark"
+        },
+        "cli_inspect_and_help": "passed",
+        "remaining_warnings": [
+          "zarr_version deprecated by newer xarray; retained for the supported older backend",
+          "Legacy cftime_range deprecation and expected distant-date cftime fallback",
+          "Time/utc_date small-coordinate chunks split storage chunks; native V field chunks retained"
+        ],
+        "private_reports": "Complete logs, account/paths and real data remain outside the public repository",
+        "tested_artifacts_sha256": {
+          "climate_preprocessing-0.4.0-py3-none-any.whl": "f0bf4e1e4263aea0734a43501c09a2a7e0ca488d7dbe897b80f0d2b4ce044492",
+          "climate_preprocessing-0.4.0.tar.gz": "f4e09614afb4a2093573c8c5effbf481983f38ccc74d986be6058ed5a508802f"
+        }
+      },
+      "limits": [
+        "GRIB: pure local concatenated single-field messages; explicit filtering for heterogeneous groups; no multi-field physical GRIB2, nonzero reference seconds, duplicate slots or sparse Cartesian layouts",
+        "GRIB header preflight may read encoded message bytes but does not decode meteorological field values",
+        "Zarr: local consolidated v2 root groups only; hard-link publication with completion marker last; no cloud/v3/append/nested groups/power-loss transaction",
+        "Managed Zarr migration must preserve nanosecond mtimes; metadata hashes and accessed-file stats are not full-field cryptographic checksums",
+        "At explicit write boundaries, at most 1000000 labels per decoded date variable are verified; lossy backend date roundtrips are rejected before publication",
+        "Rectilinear 1-D horizontal grids, existing explicit unit table and fixed positive pressure levels; no frequency inference, calendar conversion or new statistics",
+        "Legacy ndarray return boundaries compute; use lazy APIs for composition"
+      ],
+      "not_validated": [
+        "macOS and Python 3.11 runtimes",
+        "remote CI execution",
+        "Full ERA5 archive/full-grid execution",
+        "Original provider GRIB archives; only synthetic GRIB and a real-value derived GRIB2 fixture tested",
+        "Zarr v3/cloud, xESMF/ESMPy, GeoCAT/WRF and Meteostat providers",
+        "Performance speedup benchmarks"
+      ],
+      "observed_test_anomalies": [
+        {
+          "event": "Initial HPC source suite failed 4 time/bounds/forecast write cases on newer xarray",
+          "resolution": "Paired units/dtype, shared CF time/bounds encoding and exact date roundtrip guard; final 394 passed",
+          "original_attempt_retained": true
+        },
+        {
+          "event": "Unconditional nanosecond encoding broke cftime-based legacy monthly reading in a local regression",
+          "resolution": "Use microseconds when all labels are exact microseconds; keep ns only for actual sub-microsecond labels; all legacy regressions passed"
+        },
+        {
+          "event": "Older xarray loses precision for selected ns/NaT and distant cftime-us fixtures despite int64 output",
+          "resolution": "Prepublication exact date checks reject lossy output and clean temporary results; no universal backend precision claim"
+        }
+      ],
+      "artifact_identity": "HPC tested artifact hashes above identify the runtime test build. A final local documentation-only rebuild is byte-compared for all runtime, tests, examples and tools; it is not claimed to have been redeployed to HPC.",
+      "bundled_real_or_generated_data": false,
+      "third_party_implementation_copied": false,
+      "no_existing_hpc_scientific_workflows_executed": true,
+      "publication_checks": {
+        "package_text_line_endings": "LF; .gitattributes included in sdist",
+        "github_actions": "Inactive docs/preprocessing/preprocessing-ci.yml.example; not enabled",
+        "github_upload": "Not performed at user request"
+      },
+      "previous_release_validation": {
+        "package_version": "0.3.0",
+        "commit": "1e48f285ee5760ac42253a6c6ab01d91b29f880f",
+        "source_wheel_and_hpc_tests_passed_each": 283
+      }
+    },
+    "0.5.0": {
+      "validated_on": "2026-11-01",
+      "package_version": "0.5.0",
+      "baseline_commit": "1e48f285ee5760ac42253a6c6ab01d91b29f880f",
+      "working_tree_state": "local_uncommitted_unpublished_user_requested_no_upload",
+      "interpreter": "C:\\ProgramData\\anaconda3\\python.exe",
+      "python_version": "3.12.4",
+      "platform": "Windows",
+      "dependencies": {
+        "numpy": "1.26.4",
+        "pandas": "2.2.2",
+        "xarray": "2023.6.0",
+        "dask": "2024.5.0",
+        "netCDF4": "1.7.5.1.post1",
+        "cftime": "1.6.6.1",
+        "pytest": "7.4.4",
+        "setuptools": "69.5.1",
+        "cfgrib": "0.9.15.1",
+        "eccodes": "2.50.0",
+        "zarr": "2.18.7",
+        "numcodecs": "0.15.1"
+      },
+      "source_suite": {
+        "tests": 498,
+        "errors": 0,
+        "failures": 0,
+        "skipped": 25,
+        "passed": 473
+      },
+      "core_only_suite": {
+        "tests": 498,
+        "errors": 0,
+        "failures": 0,
+        "skipped": 92,
+        "passed": 406
+      },
+      "installed_wheel_suite": {
+        "tests": 498,
+        "errors": 0,
+        "failures": 0,
+        "skipped": 25,
+        "passed": 473
+      },
+      "windows_skips": {
+        "native_xesmf_esmpy_unavailable": 24,
+        "zarr_symlink_privileges": 1
+      },
+      "core_only_skips": "92 optional backend cases; skips are not backend verification",
+      "wheel_import_outside_source_tree": "passed",
+      "wheel_module_cli": "passed",
+      "sdist_and_wheel_build": "passed; wheel built from sdist",
+      "ruff": "passed (src, tests, examples, tools)",
+      "environment_note": "Windows supplemental dependencies are workspace-only; base Anaconda environment unchanged",
+      "new_capabilities": [
+        "Optional real xESMF/ESMPy scalar rectilinear remapping: bilinear, both nearest directions, conservative and conservative_normed",
+        "Explicit CF centers/bounds and eager static masks; geometry evaluated separately from lazy Dask meteorological fields",
+        "Content-addressed local weights with exact grid/mask/backend identity, checksum manifests, exclusive locks and non-overwrite publication",
+        "CF metadata/encoding reconstruction, retained units/time/calendar, audited removal of obsolete spatial/QC/area/CRS associations",
+        "prepare_dataset/JSON/CLI composition; inspect does not write weight caches or outputs"
+      ],
+      "hpc_validation": {
+        "platform": "Linux x86_64, login node, isolated conda prefix",
+        "python_version": "3.12.16",
+        "suite": {
+          "tests": 498,
+          "errors": 0,
+          "failures": 0,
+          "skipped": 0,
+          "passed": 498
+        },
+        "tested_artifacts": {
+          "climate_preprocessing-0.5.0-py3-none-any.whl": "09adad4fb8f624a50bb0c86d92897f060b187651f90b4b567cc5aed2055ad122",
+          "climate_preprocessing-0.5.0.tar.gz": "da806244b334e5f21baebc6f853d4e891c0dfeaad00308385fdcc6578e0ba548"
+        },
+        "steps": [
+          {
+            "name": "install",
+            "exit_code": 0
+          },
+          {
+            "name": "pip-check",
+            "exit_code": 0
+          },
+          {
+            "name": "pytest",
+            "exit_code": 0
+          },
+          {
+            "name": "realdata",
+            "exit_code": 0
+          },
+          {
+            "name": "cli-help",
+            "exit_code": 0
+          }
+        ],
+        "dependencies": {
+          "climate-preprocessing": "0.5.0",
+          "numpy": "2.5.4",
+          "pandas": "3.1.0",
+          "xarray": "2026.7.0",
+          "dask": "2026.8.0",
+          "netCDF4": "1.7.5.1.post1",
+          "cftime": "1.6.5",
+          "pytest": "9.2.0",
+          "xesmf": "0.9.2",
+          "esmpy": "8.9.1",
+          "cf_xarray": "0.11.3",
+          "sparse": "0.19.3",
+          "numba": "0.68.0",
+          "shapely": "2.2.0",
+          "cfgrib": "0.9.15.1",
+          "eccodes": "2.50.0",
+          "zarr": "2.18.7",
+          "numcodecs": "0.15.2"
+        },
+        "native_versions": {
+          "ESMPy": "8.9.1",
+          "HDF5": "1.14.6",
+          "ecCodes": "2.50.0",
+          "netCDF-C": "4.10.1"
+        },
+        "runtime_modules_byte_identical_to_local": 31,
+        "native_esmf": {
+          "version": "8.9.1",
+          "conda_build": "nompi_h2479638_4"
+        },
+        "netcdf_abi_resolution": "Used verified netCDF4 1.7.5.1.post1 abi3 wheel; warning-as-error import-order probes passed",
+        "threads": 2,
+        "raw_logs_and_environment_lock": "Stored privately outside public repository",
+        "new_environment_only": true,
+        "example_and_generated_cli": "PASS; at most one-ULP API/CLI rounding difference, verified atol=1e-12 K"
+      },
+      "real_data_validation": {
+        "product": "ERA5 monthly mean pressure-level V; January 2004",
+        "scope": "1 time x 2 levels x 16 latitude x 32 longitude, near-equatorial region",
+        "passed": 8,
+        "expected_rejections": 2,
+        "failures": 0,
+        "cases": [
+          {
+            "name": "original_era5_regrid_graph_has_zero_field_tasks",
+            "status": "PASS"
+          },
+          {
+            "name": "identity_nearest_matches_independent_reference_exactly",
+            "status": "PASS"
+          },
+          {
+            "name": "repeat_grid_reuses_unchanged_weights",
+            "status": "PASS"
+          },
+          {
+            "name": "same_shape_distinct_grid_uses_distinct_weights",
+            "status": "PASS"
+          },
+          {
+            "name": "changed_grid_nearest_matches_known_source_indices",
+            "status": "PASS"
+          },
+          {
+            "name": "bilinear_identity_matches_original_values",
+            "status": "PASS"
+          },
+          {
+            "name": "netcdf_output_roundtrip",
+            "status": "PASS"
+          },
+          {
+            "name": "existing_output_rejected",
+            "status": "EXPECTED_REJECTION"
+          },
+          {
+            "name": "extensive_input_rejected",
+            "status": "EXPECTED_REJECTION"
+          },
+          {
+            "name": "original_source_unchanged",
+            "status": "PASS"
+          }
+        ],
+        "original_modified": false,
+        "source_integrity_check": "File size and nanosecond mtime before/after, not a full-source SHA256 scan",
+        "full_field_computed": false,
+        "speedup_measured": false,
+        "prior_reference": "Exact small NetCDF value reference from previous ERA5 acceptance; original file reread only for bounded sample"
+      },
+      "scientific_validation": [
+        "Analytical constant fields and small-angle affine bilinear field with stated spherical tolerance",
+        "Independent great-circle polygon-area conservation on matching coverage; partial-mask full-area versus covered-area normalization",
+        "nearest_s2d sampling versus nearest_d2s scatter-sum, including masked-source and masked-target sum semantics",
+        "Global periodic seam, polar conservative bounds, source NaN propagation and unmapped target NaNs",
+        "Zero meteorological field tasks during graph construction, nonhorizontal chunk retention, cache NaN sentinel reload and CF roundtrip"
+      ],
+      "commands": [
+        "python -m pytest tests -q",
+        "python -m ruff check src tests examples tools",
+        "python -m build --no-isolation",
+        "python tools/check_wheel.py <isolated-build-directory>",
+        "HPC: install candidate wheel with --no-deps; pip check; run all tests extracted from matching sdist outside src"
+      ],
+      "boundaries": [
+        "Ascending 1D geographic grids only, >=2 centers per axis; float scalar fields, explicit conservative bounds, no inferred geometry",
+        "Static eager boolean masks with exact labels; no dynamic skipna renormalization or extrapolation options",
+        "Extensive cell totals, projected/curvilinear grids and grid-relative vector rotation unsupported",
+        "nearest_d2s sums sources per destination; conservative_normed is not generally full-area integral preserving",
+        "Weight cache is a local hard-link filesystem protocol, not cloud/distributed or hostile-writer protection",
+        "P4 GRIB/Zarr limits continue; their prior real-data suites are historical, not rerun as P5 real-data evidence"
+      ],
+      "not_validated": [
+        "macOS and Python3.11",
+        "native xESMF/ESMPy on Windows",
+        "GitHub Actions execution",
+        "full ERA5 archives or performance speedup",
+        "original provider GRIB products",
+        "Zarr v3/cloud, vertical/hybrid interpolation, GeoCAT/WRF and station providers"
+      ],
+      "observed_test_anomalies": [
+        {
+          "event": "New pandas exposes read-only coordinate index views",
+          "resolution": "Snapshot independence test uses public coordinate replacement and mutable bounds; no production contract relaxed"
+        },
+        {
+          "event": "xESMF works without a SciPy distribution",
+          "resolution": "Cache metadata records absent optional distributions; availability relies on real native import"
+        },
+        {
+          "event": "New xarray moves CF bounds links into encoding",
+          "resolution": "Roundtrip assertion accepts either standard representation"
+        },
+        {
+          "event": "Conda netCDF4 build raised a NumPy ABI warning",
+          "resolution": "Replace only new isolated prefix's netCDF4 with verified ABI3 wheel and verify imports without warning suppression"
+        }
+      ],
+      "artifact_identity": "Tested candidate runtime and sdist are byte matched. Final documentation-only rebuild is verified against these runtime/tests/examples/tools and is retained locally.",
+      "bundled_real_or_generated_data": false,
+      "third_party_implementation_copied": false,
+      "publication_checks": {
+        "package_text_line_endings": "LF",
+        "github_actions": "Inactive template only",
+        "github_upload": "Not performed at user request"
+      }
+    },
+    "0.6.0": {
+      "validated_on": "2026-11-01",
+      "package_version": "0.6.0",
+      "baseline_commit": "1e48f285ee5760ac42253a6c6ab01d91b29f880f",
+      "working_tree_state": "local_uncommitted_unpublished_user_requested_no_upload",
+      "interpreter": "C:\\ProgramData\\anaconda3\\python.exe",
+      "python_version": "3.12.4",
+      "platform": "Windows",
+      "dependencies": {
+        "numpy": "1.26.4",
+        "pandas": "2.2.2",
+        "xarray": "2023.6.0",
+        "dask": "2024.5.0",
+        "netCDF4": "1.7.5.1.post1",
+        "cftime": "1.6.6.1",
+        "pytest": "7.4.4",
+        "setuptools": "69.5.1",
+        "cfgrib": "0.9.15.1",
+        "eccodes": "2.50.0",
+        "zarr": "2.18.7",
+        "numcodecs": "0.15.1",
+        "MetPy": "1.7.1",
+        "Pint": "0.24.4",
+        "geocat-comp": "2026.4.0",
+        "scipy": "1.13.1"
+      },
+      "source_suite": {
+        "tests": 619,
+        "errors": 0,
+        "failures": 0,
+        "skipped": 26,
+        "passed": 593
+      },
+      "core_only_suite": {
+        "tests": 619,
+        "errors": 0,
+        "failures": 0,
+        "skipped": 136,
+        "passed": 483
+      },
+      "installed_wheel_suite": {
+        "tests": 619,
+        "errors": 0,
+        "failures": 0,
+        "skipped": 26,
+        "passed": 593
+      },
+      "windows_skips": {
+        "prior_native_xesmf_esmpy_cases": 24,
+        "vertical_horizontal_composition_requires_native_xesmf": 1,
+        "zarr_symlink_privileges": 1
+      },
+      "core_only_skips": "136 optional backend cases; skips are not backend verification",
+      "execution_limits": {
+        "dask_scheduler": "threads",
+        "dask_num_workers": 2
+      },
+      "wheel_import_outside_source_tree": "passed",
+      "wheel_module_cli": "passed",
+      "sdist_and_wheel_build": "passed; wheel built from sdist",
+      "ruff": "passed (src, tests, examples, tools)",
+      "environment_note": "Windows supplemental dependencies are workspace-only; base Anaconda environment unchanged",
+      "new_capabilities": [
+        "CF physical pressure in Pa for exactly a*p0+b*ps and ap+b*ps with explicit units and matched cell-center coefficients",
+        "Fixed/hybrid linear or log-pressure interpolation through optional MetPy public kernels, invoked only inside scheduled Dask tasks",
+        "Explicit Pa/hPa targets, strict monotonic positive distinct axes in either direction, retained target order and singleton targets",
+        "No extrapolation or bridging across missing source layers; exact valid source hits retained; explicit below-ground filtering",
+        "Deferred column pressure/surface pressure checks; only vertical core dimension rechunked; nonvertical chunks retained",
+        "Units/calendar/time/horizontal geometry retained; audited removal of obsolete vertical CF/QC/packing/range metadata",
+        "prepare_dataset/JSON/CLI vertical step before generic mask_invalid and horizontal regridding; inspect performs no field computation or output writes"
+      ],
+      "backend_selection": {
+        "runtime": "MetPy >=1.7.1,<1.8 public interpolate_1d/log_interpolate_1d; tested version 1.7.1",
+        "reference_and_optional_parity": "GeoCAT-comp 2026.4.0 uses the same upstream MetPy kernels and is not a runtime requirement",
+        "geocat_parity_cases": [
+          "test_optional_geocat_public_hybrid_reference[linear-a]",
+          "test_optional_geocat_public_hybrid_reference[linear-ap]",
+          "test_optional_geocat_public_hybrid_reference[log-a]",
+          "test_optional_geocat_public_hybrid_reference[log-ap]"
+        ],
+        "kernel_source_fingerprints": {
+          "geocat.comp.interpolation": {
+            "file": "interpolation.py",
+            "sha256": "6f612e138c277f65e17b9b264a679c7d6922bba4cc73e05df12a970f8ce918d3"
+          },
+          "metpy.interpolate.one_dimension": {
+            "file": "one_dimension.py",
+            "sha256": "f11f0fc85da9fdc8adedaa5085a8572ff63e8f4df897b0c90196667b3aae4e30"
+          }
+        },
+        "third_party_implementation_copied": false
+      },
+      "hpc_validation": {
+        "platform": "Linux x86_64, login node, isolated conda prefix",
+        "python_version": "3.12.16",
+        "suite": {
+          "tests": 619,
+          "errors": 0,
+          "failures": 0,
+          "skipped": 0,
+          "passed": 619
+        },
+        "tested_artifacts": {
+          "climate_preprocessing-0.6.0-py3-none-any.whl": "af6c852218eeb5afd9935d2cbc13ed2778a5e1d45b92a7d3a589c500a2051bad",
+          "climate_preprocessing-0.6.0.tar.gz": "e621f170989c3b63f016e9f7323cfde66050a7096d99d2e770ca2ab0f20e438c"
+        },
+        "steps": [
+          {
+            "name": "install",
+            "exit_code": 0
+          },
+          {
+            "name": "pip-check",
+            "exit_code": 0
+          },
+          {
+            "name": "pytest",
+            "exit_code": 0
+          },
+          {
+            "name": "realdata",
+            "exit_code": 0
+          },
+          {
+            "name": "example",
+            "exit_code": 0
+          },
+          {
+            "name": "environment",
+            "exit_code": 0
+          },
+          {
+            "name": "cli-help",
+            "exit_code": 0
+          }
+        ],
+        "dependencies": {
+          "climate-preprocessing": "0.6.0",
+          "numpy": "2.5.4",
+          "pandas": "3.1.0",
+          "xarray": "2026.7.0",
+          "dask": "2026.8.0",
+          "netCDF4": "1.7.5.1.post1",
+          "cftime": "1.6.5",
+          "pytest": "9.2.0",
+          "setuptools": "84.2.1",
+          "cfgrib": "0.9.15.1",
+          "eccodes": "2.50.0",
+          "zarr": "2.18.7",
+          "numcodecs": "0.15.2",
+          "MetPy": "1.7.1",
+          "Pint": "0.26.2",
+          "geocat-comp": "2026.4.0",
+          "scipy": "1.18.1",
+          "xesmf": "0.9.2",
+          "esmpy": "8.9.1",
+          "cf_xarray": "0.11.3",
+          "sparse": "0.19.3",
+          "numba": "0.68.0",
+          "shapely": "2.2.0"
+        },
+        "native_versions": {
+          "ESMPy": "8.9.1",
+          "HDF5": "1.14.6",
+          "ecCodes": "2.50.0",
+          "netCDF-C": "4.10.1"
+        },
+        "runtime_modules_byte_identical_to_local": 35,
+        "source_test_example_tool_python_files_byte_identical": 71,
+        "installed_wheel_metadata_byte_identity": "PASS: METADATA, entry_points.txt, WHEEL, top_level.txt",
+        "netcdf_abi_resolution": "Verified netCDF4 1.7.5.1.post1 abi3 wheel is active; module and importlib.metadata versions agree; warning-as-error import probes passed",
+        "duplicate_metadata_note": "Cloned prefix retains stale netCDF4 1.7.4 dist-info alongside active 1.7.5.1.post1; both recorded privately, validated runtime left unchanged",
+        "threads": 2,
+        "raw_logs_and_environment_lock": "Stored privately outside public repository",
+        "new_environment_only": true,
+        "example_and_generated_cli": {
+          "version": "0.6.0",
+          "steps": [
+            {
+              "name": "example",
+              "exit_code": 0
+            },
+            {
+              "name": "inspect",
+              "exit_code": 0
+            },
+            {
+              "name": "prepare",
+              "exit_code": 0
+            }
+          ],
+          "status": "PASS",
+          "analytic_temperature_K": [
+            250.0,
+            270.0,
+            300.0
+          ],
+          "absolute_tolerance_K": 1e-12,
+          "api_cli_max_absolute_difference_K": 0.0,
+          "inspect_did_not_write": true
+        },
+        "test_warnings": 101
+      },
+      "real_data_validation": {
+        "product": "ERA5 monthly mean pressure-level V; January 2004",
+        "scope": "1 time x 3 levels (3,2,1 hPa) x 16 latitude x 32 longitude",
+        "fixture_limitations": "Surface pressure, missing values and hybrid coefficients are synthetic validation fixtures over the real scalar sample; no original hybrid product is tested.",
+        "passed": 12,
+        "expected_rejections": 2,
+        "failures": 0,
+        "cases": [
+          {
+            "name": "pressure_interpolation_graph_zero_field_tasks",
+            "status": "PASS",
+            "details": {
+              "dask_field_tasks": 0,
+              "sample_dimensions": {
+                "time": 1,
+                "pressure": 3,
+                "latitude": 16,
+                "longitude": 32
+              }
+            }
+          },
+          {
+            "name": "source_sample_matches_independent_original_read",
+            "status": "PASS",
+            "details": {
+              "reference_order_Pa": [
+                100.0,
+                200.0,
+                300.0
+              ],
+              "source_sample_exact": true
+            }
+          },
+          {
+            "name": "linear_pressure_manual_formula",
+            "status": "PASS",
+            "details": {
+              "method": "linear",
+              "maximum_absolute_error": 0.0,
+              "independent_manual_formula": true
+            }
+          },
+          {
+            "name": "log_pressure_manual_formula",
+            "status": "PASS",
+            "details": {
+              "method": "log",
+              "maximum_absolute_error": 0.0,
+              "independent_manual_formula": true
+            }
+          },
+          {
+            "name": "exact_source_levels_preserve_descending_order",
+            "status": "PASS",
+            "details": {
+              "requested_descending_order_and_values_exact": true
+            }
+          },
+          {
+            "name": "outside_center_span_nan_without_extrapolation",
+            "status": "PASS",
+            "details": {
+              "both_sides_outside_source_center_span_are_nan": true
+            }
+          },
+          {
+            "name": "missing_level_gaps_and_exact_hits",
+            "status": "PASS",
+            "details": {
+              "fixture": "synthetically mask the real 2 hPa level",
+              "gaps_not_bridged": true,
+              "exact_valid_endpoints_preserved": true
+            }
+          },
+          {
+            "name": "explicit_synthetic_surface_boundary",
+            "status": "PASS",
+            "details": {
+              "fixture": "artificial ps=250 Pa west / 350 Pa east",
+              "below_surface_source_and_target_excluded": true,
+              "no_extrapolation_below_last_valid_center": true
+            }
+          },
+          {
+            "name": "synthetic_CF_a_formula_on_real_values",
+            "status": "PASS",
+            "details": {
+              "fixture": "synthetic CF hybrid coefficients representing the real sample's fixed pressures",
+              "formula": "a",
+              "method": "linear",
+              "units_convert_hPa_to_Pa": true,
+              "field_tasks_during_graph": 0
+            }
+          },
+          {
+            "name": "synthetic_CF_ap_formula_on_real_values",
+            "status": "PASS",
+            "details": {
+              "fixture": "synthetic CF hybrid coefficients representing the real sample's fixed pressures",
+              "formula": "ap",
+              "method": "log",
+              "units_convert_hPa_to_Pa": true,
+              "field_tasks_during_graph": 0
+            }
+          },
+          {
+            "name": "netcdf_roundtrip",
+            "status": "PASS",
+            "details": {
+              "exact_roundtrip_values_coordinates_units_calendar_provenance": true,
+              "bytes": 50620
+            }
+          },
+          {
+            "name": "duplicate_targets_rejected",
+            "status": "EXPECTED_REJECTION",
+            "error": "Pressure coordinates must be distinct and positive"
+          },
+          {
+            "name": "ambiguous_hybrid_formula_rejected",
+            "status": "EXPECTED_REJECTION",
+            "error": "Hybrid formula_terms must be exactly a,b,p0,ps or ap,b,ps"
+          },
+          {
+            "name": "original_source_unchanged",
+            "status": "PASS",
+            "details": {
+              "source_size_and_mtime_ns_unchanged": true
+            }
+          }
+        ],
+        "linear_max_absolute_error": 0.0,
+        "log_max_absolute_error": 0.0,
+        "original_modified": false,
+        "source_integrity_check": "File size and nanosecond mtime before/after, not a full-source SHA256 scan",
+        "full_field_computed": false,
+        "speedup_measured": false
+      },
+      "scientific_validation": [
+        "Analytical pressure-linear/log-pressure-linear fields with independent references; ascending and descending source/target axes",
+        "Both CF hybrid formulas and four actual GeoCAT public API comparisons (two formulas x two methods)",
+        "No missing-layer bridging; exact endpoints next to NaNs; outside support missing; below-ground source and target filtering",
+        "Nonpositive/infinite/nonmonotonic column pressure rejection; missing ps yields missing columns",
+        "Zero field tasks during graph construction and CLI inspect; vertical-only rechunking; nonvertical dimension order/chunks retained",
+        "CF links, units, calendar/time, horizontal CRS/area and NetCDF roundtrip; vertical then horizontal pipeline composition",
+        "All P4/P5 automated backend regression tests included in the full HPC suite; their previous real-data suites remain historical"
+      ],
+      "commands": [
+        "C:\\ProgramData\\anaconda3\\python.exe -m pytest tests -q (with workspace-only optional dependencies and Dask threads=2)",
+        "C:\\ProgramData\\anaconda3\\python.exe -m ruff check src tests examples tools",
+        "C:\\ProgramData\\anaconda3\\python.exe -m build --no-isolation --outdir <workspace-build-directory>",
+        "C:\\ProgramData\\anaconda3\\python.exe tools/check_wheel.py <workspace-build-directory>",
+        "HPC: install candidate wheel with --no-deps; pip check; run tests from matching sdist outside src; bounded ERA5 and example/CLI checks"
+      ],
+      "boundaries": [
+        "Only fixed pressure and CF atmosphere_hybrid_sigma_pressure_coordinate; exact a,b,p0,ps or ap,b,ps terms; explicit supported units",
+        "Cell-center coefficients must share the field vertical dimension; interface-to-center conversion and coefficient inference unsupported",
+        "Linear/log-pressure only, with no extrapolation, gap bridging or special temperature/geopotential extrapolation",
+        "Fixed-level surface pressure optional by variable name; hybrid surface pressure comes from CF formula terms",
+        "Inspect may read bounded coordinates, coefficients and time bounds while constructing graphs; meteorological fields stay uncomputed",
+        "P4 GRIB/Zarr and P5 horizontal-remapping limits continue; prior real-data acceptance is historical and not claimed rerun"
+      ],
+      "not_validated": [
+        "macOS and Python 3.11",
+        "native xESMF/ESMPy on Windows",
+        "GitHub Actions execution",
+        "full ERA5 archives or performance speedup",
+        "original provider GRIB or hybrid/model-level products",
+        "Zarr v3/cloud, product-specific ERA5/MERRA-2/JRA-3Q/WRF adapters and station providers"
+      ],
+      "observed_test_anomalies": [
+        {
+          "event": "One Windows focused run without bounded worker settings stopped progressing and was interrupted",
+          "resolution": "Cause undiagnosed; subsequent focused/source/core/wheel runs with Dask threads=2 passed; no diagnostic trace was captured"
+        },
+        {
+          "event": "xarray may read first/last time-bounds slices while decoding and attach scalar CRS to time DataArrays",
+          "resolution": "Tests allow coordinate-only decoding tasks, still require zero physical field tasks, and compare time variables while preserving CRS"
+        },
+        {
+          "event": "Synthetic example field assignment inherited cleaned derived-pressure coordinates",
+          "resolution": "Use dimensions and data for synthetic field assignment to retain original valid hybrid CF coordinate metadata"
+        },
+        {
+          "event": "Enumerating duplicate netCDF4 metadata initially selected stale 1.7.4 from the cloned prefix",
+          "resolution": "Record importlib.metadata.version and actual module version (both 1.7.5.1.post1), plus both metadata entries; no validated runtime changes"
+        }
+      ],
+      "artifact_identity": "Tested candidate runtime and sdist are byte matched. Final documentation-only rebuild is verified against runtime/tests/examples/tools and dependency/entrypoint metadata, and retained locally without redeployment.",
+      "bundled_real_or_generated_data": false,
+      "third_party_implementation_copied": false,
+      "publication_checks": {
+        "package_text_line_endings": "LF",
+        "github_actions": "Inactive template only",
+        "github_upload": "Not performed at user request"
+      },
+      "next_phase": "P7 product adapters: ERA5/MERRA-2/JRA-3Q, followed by WRF where dependencies permit"
+    }
   },
-  "previous_release_validation": {
-    "package_version": "0.2.1",
-    "commit": "14378910e5ef88eb025b83a3c04429f1c48ce5e5",
-    "source_wheel_and_hpc_tests_passed_each": 147
+  "validation_working_tree_state": "local_uncommitted_unpublished_user_requested_no_upload",
+  "repository_update": {
+    "date": "2026-11-05",
+    "repository": "https://github.com/Dengruihan-clim/Climate-Base",
+    "target_branch": "main",
+    "scope": "Publish the validated P4-P7 preprocessing work as repository version 0.7.0",
+    "validation_date": "2026-11-01",
+    "runtime_tests_examples_tools_unchanged": true,
+    "separate_pypi_or_github_release": false,
+    "github_actions_enabled": false,
+    "wrf_excluded": true
   }
 }

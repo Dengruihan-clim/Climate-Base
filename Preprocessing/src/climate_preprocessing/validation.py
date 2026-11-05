@@ -10,11 +10,28 @@ Climate-Base improvements
 The Dask-backed field contract is explicit; coordinate inspection is allowed,
 but validation never coerces a field to NumPy or executes its task graph.
 This module is an independent implementation using public xarray APIs.
+Object-valued fields such as cftime bounds use an explicit element-count bound
+when first chunked: Dask cannot estimate their byte size for automatic chunks.
 """
 
 from collections.abc import Mapping
 
 import xarray as xr
+
+
+def _object_chunks(variable):
+    """Choose at most 65536 entries per new object block without reading it.
+
+    This bounds the element count, not variable-sized Python object bytes.
+    Existing Dask blocks are preserved by the default ensure_lazy path.
+    """
+    remaining = 65536
+    chunks = {}
+    for dimension in reversed(variable.dims):
+        size = max(1, min(variable.sizes[dimension], remaining))
+        chunks[dimension] = size
+        remaining = max(1, remaining // size)
+    return chunks
 
 
 def require_dataset(dataset):
@@ -51,7 +68,7 @@ def ensure_lazy(dataset, chunks="auto"):
                 # Chunk only new eager fields. Dataset.chunk('auto') would also
                 # repartition existing Dask fields, discarding a user's chosen
                 # memory/task-size policy when even one eager field was added.
-                result[name] = variable.chunk("auto")
+                result[name] = variable.chunk(_object_chunks(variable) if variable.dtype.kind == "O" else "auto")
     else:
         result = dataset.chunk(chunks)
     result.set_close(dataset.close)

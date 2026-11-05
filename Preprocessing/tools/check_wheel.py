@@ -29,6 +29,9 @@ def check_wheel(dist):
         shutil.copytree(root / "tests", work / "tests", ignore=shutil.ignore_patterns("__pycache__"))
         shutil.copytree(root / "examples", work / "examples", ignore=shutil.ignore_patterns("__pycache__"))
         shutil.copytree(root / "tools", work / "tools", ignore=shutil.ignore_patterns("__pycache__"))
+        # Preserve pytest marker/options registration in the tree-external run.
+        # Package imports still resolve only to the isolated installed wheel.
+        shutil.copy2(root / "pyproject.toml", work / "pyproject.toml")
         environment = os.environ.copy()
         inherited = [part for part in environment.get("PYTHONPATH", "").split(os.pathsep)
                      if part and Path(part).resolve() != (root / "src").resolve()]

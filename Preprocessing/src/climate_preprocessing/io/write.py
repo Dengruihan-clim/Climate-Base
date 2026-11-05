@@ -22,14 +22,98 @@ import os
 from pathlib import Path
 import tempfile
 
+import numpy as np
 import xarray as xr
 
+from ._time_roundtrip import validate_time_roundtrip
 from ..metadata import validate_metadata
 from ..provenance import record_operation
 from ..validation import ensure_lazy
 
 _CF_LINKS = ("bounds", "climatology", "coordinates", "grid_mapping", "cell_measures",
              "formula_terms", "ancillary_variables")
+_TIME_UNITS = {"D": "days", "h": "hours", "m": "minutes", "s": "seconds",
+               "ms": "milliseconds", "us": "microseconds", "ns": "nanoseconds"}
+
+
+def _time_encodings(dataset, output, requested):
+    """Use paired integer time encoding, shared by CF centers and bounds.
+
+    Only bounded date labels and relationship metadata are inspected here.
+    Date labels are checked after writing, before publication; meteorological
+    fields stay lazy.
+    """
+    names = {name for name in dataset.variables if dataset[name].dtype.kind == "M"
+             or (dataset[name].dtype.kind == "O"
+                 and ("since" in str(output.get(name, {}).get("units", ""))
+                      or isinstance(dataset.indexes.get(name), xr.CFTimeIndex)))}
+    for name in names:
+        index = dataset.indexes.get(name)
+        if isinstance(index, xr.CFTimeIndex):
+            output.setdefault(name, {}).setdefault("calendar", index.calendar)
+    links = []
+    for name in dataset.variables:
+        for relationship in ("bounds", "climatology"):
+            target = dataset[name].attrs.get(relationship)
+            if target in dataset.variables and dataset[name].dtype.kind in "MO" and dataset[target].dtype.kind in "MO":
+                links.append({name, target})
+    # A CF linked object bound may have no independent time encoding.
+    while any(link & names and not link <= names for link in links):
+        for link in links:
+            if link & names:
+                names.update(link)
+    groups = [{name} for name in sorted(names)]
+    for link in links:
+        connected = [group for group in groups if group & link]
+        if connected:
+            merged = set().union(*connected)
+            groups = [group for group in groups if not group & link] + [merged]
+    changes = {}
+    aliases = {"gregorian": "standard", "365_day": "noleap", "366_day": "all_leap"}
+    for group in groups:
+        ordered = sorted(group)
+        calendars = {output.get(name, {}).get("calendar") for name in ordered} - {None}
+        if len({aliases.get(value, value) for value in calendars}) > 1:
+            raise ValueError("Linked datetime coordinates and bounds require consistent calendars")
+        explicit = [name for name in ordered if {"units", "dtype"} & set(requested.get(name, {}))]
+        if explicit:
+            pairs = []
+            for name in explicit:
+                settings = output.get(name, {})
+                if settings.get("units") is None or settings.get("dtype") is None:
+                    raise ValueError("Explicit datetime encoding requires both units and dtype")
+                pairs.append((settings["units"], np.dtype(settings["dtype"])))
+            if any(pair != pairs[0] for pair in pairs[1:]):
+                raise ValueError("Explicit linked datetime encodings must use the same units and dtype")
+            units, dtype = pairs[0]
+        else:
+            precisions = []
+            for name in ordered:
+                variable = dataset[name]
+                unit = "us" if variable.dtype.kind == "O" else np.datetime_data(variable.dtype)[0]
+                if unit == "ns":
+                    if variable.size > 1_000_000:
+                        raise ValueError(f"Output time verification for {name!r} exceeds the 1000000-entry limit")
+                    dates = variable.to_numpy()
+                    ticks = dates[~np.isnat(dates)].astype("int64")
+                    # Microseconds remain readable by cftime/legacy NetCDF
+                    # APIs. Use nanoseconds only when actual labels need them.
+                    if not np.any(ticks % 1000):
+                        unit = "us"
+                precisions.append(unit)
+            if any(unit not in _TIME_UNITS for unit in precisions):
+                raise ValueError("Unsupported decoded datetime precision")
+            unit = max(precisions, key=lambda value: list(_TIME_UNITS).index(value))
+            units, dtype = f"{_TIME_UNITS[unit]} since 1970-01-01", "int64"
+        for name in ordered:
+            settings = output.setdefault(name, {})
+            previous = settings.get("units")
+            settings.update(units=units, dtype=dtype)
+            if calendars:
+                settings.setdefault("calendar", sorted(calendars)[0])
+            changes[name] = {"source_units": previous, "output_units": units,
+                             "output_dtype": str(np.dtype(dtype))}
+    return changes
 
 
 def _prepare(dataset, encoding):
@@ -80,6 +164,7 @@ def _prepare(dataset, encoding):
             settings.update(dict(requested[name]))
         if settings:
             output_encoding[name] = settings
+    reset_time_encoding = _time_encodings(result, output_encoding, requested)
     # Put only eager fields on the Dask path. Do not replace the user's
     # existing block boundaries with another automatic chunking decision.
     result = ensure_lazy(result)
@@ -87,6 +172,11 @@ def _prepare(dataset, encoding):
         result = record_operation(result, "reset_output_encoding", {
             "removed_range_attributes": discarded_ranges,
             "reason": "Source packed-value range is not valid for decoded output",
+        })
+    if reset_time_encoding:
+        result = record_operation(result, "reset_time_encoding", {
+            "variables": reset_time_encoding,
+            "reason": "Pair time units/dtype and keep CF center/bounds encoding consistent",
         })
     result.set_close(dataset.close)
     return result, output_encoding
@@ -127,6 +217,7 @@ def write_dataset(dataset, path, *, encoding=None, engine="netcdf4") -> Path:
             validate_metadata(reopened)
             if dict(reopened.sizes) != dict(prepared.sizes):
                 raise ValueError("Written dimensions differ from the prepared Dataset")
+            validate_time_roundtrip(dataset, reopened)
         os.link(temporary, destination)
     finally:
         temporary.unlink(missing_ok=True)

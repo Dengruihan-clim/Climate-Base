@@ -27,6 +27,19 @@ _RELATIONS = _SINGLE | _LIST | _PAIRS | {"grid_mapping"}
 _PAIR_PATTERN = re.compile(r"(?:^|\s)([^\s:]+)\s*:\s*([^\s:]+)")
 
 
+def _without_cell_methods(value, axes):
+    """Remove transformed-axis clauses, retaining other CF methods/comments."""
+    searchable = re.sub(r"\([^)]*\)", lambda match: " " * len(match[0]), value)
+    clauses = list(re.finditer(r"(?<!\S)(?:[^\s:()]+\s*:\s*)+", searchable))
+    retained = []
+    for index, clause in enumerate(clauses):
+        labels = {axis.strip() for axis in clause[0].split(":")[:-1]}
+        end = clauses[index + 1].start() if index + 1 < len(clauses) else len(value)
+        if not labels.intersection(axes):
+            retained.append(value[clause.start():end].strip())
+    return " ".join(retained)
+
+
 def _attribute(variable, attribute):
     left = variable.attrs.get(attribute)
     right = variable.encoding.get(attribute)
@@ -120,11 +133,13 @@ def rename_cf_references(dataset, mapping):
             if "cell_methods" in container:
                 value = container["cell_methods"]
                 if isinstance(value, str):
-                    container["cell_methods"] = re.sub(
-                        r"(?<!\S)([^\s:]+)(?=\s*:)",
-                        lambda match: mapping.get(match[0], match[0]),
-                        value,
-                    )
+                    # CF comments may contain text such as 'time: original'.
+                    # Only actual axis labels outside comments are renamed.
+                    searchable = re.sub(r"\([^)]*\)", lambda match: " " * len(match[0]), value)
+                    matches = list(re.finditer(r"(?<!\S)([^\s:()]+)(?=\s*:)", searchable))
+                    for match in reversed(matches):
+                        value = value[:match.start()] + mapping.get(match[0], match[0]) + value[match.end():]
+                    container["cell_methods"] = value
     result.set_close(dataset.close)
     validate_metadata(result)
     return result

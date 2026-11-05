@@ -13,6 +13,7 @@ All field transformations stay Dask-backed; the writer is the compute boundary.
 """
 
 from collections.abc import Mapping
+from functools import partial
 import hashlib
 import json
 from pathlib import Path
@@ -31,8 +32,9 @@ def prepare_dataset(
     inputs, *, chunks="auto", coordinates=None, time="time",
     longitude_convention="0_360", latitude_order="ascending", region=None, units=None,
     metadata_policy="strict", pressure=None, expected_time=None, time_range=None,
+    input_format="netcdf", input_options=None, regrid=None, vertical=None, adapter=None,
 ):
-    """Return a lazy normalized Dataset for local rectilinear NetCDF files.
+    """Return a lazy normalized Dataset from explicit local input formats.
 
     Parameters
     ----------
@@ -68,6 +70,37 @@ def prepare_dataset(
     time_range : mapping, optional
         Inclusive ``start`` / ``end`` instants for ``subset_time``. Complete ISO
         dates mean midnight; a bare year or month is not accepted.
+    input_format : {'netcdf', 'grib', 'zarr'}
+        Explicit backend, default NetCDF. GRIB and Zarr accept one input only
+        and need the corresponding optional extra. Format is not guessed from
+        a suffix. GRIB retains forecast axes; ``time`` normally means the
+        forecast reference time, not a flattened valid-time series.
+    input_options : mapping, optional
+        GRIB accepts ``filter_by_keys``; Zarr accepts ``require_complete``.
+        Other keys and NetCDF backend options are rejected. Zarr completion
+        checks default to enabled; unmanaged external stores require opting out.
+    regrid : mapping, optional
+        Explicit horizontal remapping after selection, unit conversion and
+        nonfinite masking. Requires ``target_grid`` (Dataset or a mapping of
+        latitude/longitude and optional explicit bounds), ``variables`` and
+        ``method``. Optional ``periodic``, ``weights_dir`` and ``quantity`` follow
+        regrid_dataset. Arbitrary static masks are composed via the Python API.
+        Geometry/weights are eager; meteorological field data remain lazy.
+    vertical : mapping, optional
+        ``interpolate_pressure`` options: target_levels, variables and explicit
+        linear/log method, plus coordinate, target_units and surface_pressure.
+        Runs after source normalization/unit conversion and before generic
+        nonfinite masking/horizontal remapping, so invalid pressure geometry
+        cannot be silently turned into a missing surface-pressure column.
+        Fixed-pressure normalization (if separately requested) has already renamed
+        its coordinate to pressure. Hybrid input must retain its CF formula.
+    adapter : mapping, optional
+        Explicit ``adapt_product`` product, variables, coordinates and selectors.
+        Each input is adapted before strict multi-file comparison. Native chunk
+        names and adapter coordinate mappings refer to the source; subsequent
+        options use canonical output names. The top-level time must be 'time'.
+        No data stream is merged, no temporal statistic is inferred, and no
+        source units are silently converted by the adapter.
 
     Returns
     -------
@@ -84,6 +117,35 @@ def prepare_dataset(
         raise ValueError("time must be a coordinate name")
     if not isinstance(metadata_policy, str) or metadata_policy not in ("strict", "preserve_sources"):
         raise ValueError("metadata_policy must be 'strict' or 'preserve_sources'")
+    if not isinstance(input_format, str) or input_format not in {"netcdf", "grib", "zarr"}:
+        raise ValueError("input_format must be netcdf, grib or zarr")
+    supported = {"netcdf": set(), "grib": {"filter_by_keys"}, "zarr": {"require_complete"}}[input_format]
+    if input_options is not None and (not isinstance(input_options, Mapping) or set(input_options) - supported):
+        raise ValueError(f"Invalid input_options for {input_format}; supported keys are {sorted(supported)}")
+    input_options = dict(input_options or {})
+    source_time = time
+    if adapter is not None:
+        from .adapters import adapt_product
+        from .adapters.api import adapter_source_time, validate_adapter_options, validate_product_time
+
+        validate_adapter_options(adapter)
+        source_time = adapter_source_time(adapter)
+        if input_format == "grib":
+            raise ValueError("Product adapters require decoded monthly CF NetCDF/Zarr representations, not raw GRIB")
+        if time != "time":
+            raise ValueError("With adapter, use canonical time='time'; map the source in adapter.coordinates")
+    if regrid is not None:
+        from .regrid.api import validate_regrid_options
+
+        validate_regrid_options(regrid)
+    if vertical is not None:
+        from .vertical.interpolate import validate_vertical_options
+
+        validate_vertical_options(vertical)
+    if input_format != "netcdf" and len(inputs) != 1:
+        raise ValueError("GRIB and Zarr preparation require exactly one explicitly selected input")
+    if input_format != "netcdf" and metadata_policy != "strict":
+        raise ValueError("metadata_policy applies to NetCDF multi-file inputs only")
     for name, value, allowed in (
         ("coordinates", coordinates, {"latitude", "longitude"}),
         ("region", region, {"latitude_bounds", "longitude_bounds"}),
@@ -95,18 +157,39 @@ def prepare_dataset(
     coordinates = dict(coordinates or {})
     if any(not isinstance(value, str) or not value for value in coordinates.values()):
         raise ValueError("Coordinate mappings must contain nonempty names")
+    if adapter is not None and any(name != value for name, value in coordinates.items()):
+        raise ValueError("With adapter, top-level coordinates must use canonical names; map sources in adapter.coordinates")
     if units is not None and (
         not isinstance(units, Mapping)
         or any(not isinstance(k, str) or not isinstance(v, str) or not v.strip() for k, v in units.items())
     ):
         raise ValueError("units must map variable names to nonempty target units")
-    source = (
-        open_dataset(inputs[0], chunks=chunks, time=time)
-        if len(inputs) == 1 else open_mfdataset(
+    if input_format == "grib":
+        from .io.grib import open_grib
+
+        source = open_grib(inputs[0], chunks=chunks, **input_options)
+    elif input_format == "zarr":
+        from .io.zarr import open_zarr
+
+        source = open_zarr(inputs[0], chunks=chunks, **input_options)
+    elif len(inputs) == 1:
+        source = open_dataset(inputs[0], chunks=chunks, time=source_time)
+    elif adapter is not None:
+        from .io.multifile import _open_mfdataset
+
+        source = _open_mfdataset(
+            inputs, time="time", source_time=source_time, chunks=chunks,
+            metadata_policy=metadata_policy, preprocess=partial(adapt_product, **adapter),
+        )
+    else:
+        source = open_mfdataset(
             inputs, time=time, chunks=chunks, metadata_policy=metadata_policy,
         )
-    )
     try:
+        if adapter is not None and not (input_format == "netcdf" and len(inputs) > 1):
+            source = adapt_product(source, **adapter)
+        if adapter is not None:
+            validate_product_time(source, time="time")
         validate_time(source, time=time, expected=expected_time)
         expected_summary = None
         if expected_time is not None:
@@ -133,7 +216,19 @@ def prepare_dataset(
             if name not in result.data_vars:
                 raise ValueError(f"Unit conversion requires a data variable: {name!r}")
             result[name] = convert_dataarray_units(result[name], target)
+        if vertical is not None:
+            from .vertical import interpolate_pressure
+
+            result = interpolate_pressure(result, **vertical)
         result = mask_invalid(result)
+        if regrid is not None:
+            from .regrid import regrid_dataset, rectilinear_grid
+
+            regrid_options = dict(regrid)
+            target = regrid_options.pop("target_grid")
+            if isinstance(target, Mapping):
+                target = rectilinear_grid(**target)
+            result = regrid_dataset(result, target, **regrid_options)
         validate_metadata(result)
         result = record_operation(result, "prepare_dataset", {
             "coordinates": coordinates, "time": time, "chunks": chunks,
@@ -143,6 +238,10 @@ def prepare_dataset(
             "pressure": dict(pressure) if pressure is not None else None,
             "expected_time": expected_summary,
             "time_range_selected": time_range is not None,
+            "input_format": input_format, "input_options": input_options,
+            "regrid_requested": regrid is not None,
+            "vertical_requested": vertical is not None,
+            "adapter_requested": adapter is not None,
         })
         result.set_close(source.close)
         return result

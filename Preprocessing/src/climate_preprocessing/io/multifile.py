@@ -171,6 +171,19 @@ def open_mfdataset(paths, *, time="time", chunks="auto", engine="netcdf4", metad
     static coordinates (including CF bounds/CRS) are compared, up to one
     million elements each. The result owns every source close callback.
     """
+    return _open_mfdataset(paths, time=time, chunks=chunks, engine=engine, metadata_policy=metadata_policy)
+
+
+def _open_mfdataset(
+    paths, *, time="time", chunks="auto", engine="netcdf4", metadata_policy="strict",
+    source_time=None, preprocess=None,
+):
+    """Internal composition hook: adapt each source before strict comparison.
+
+    The public reader retains its original contract. Product preparation may
+    explicitly select/rename each branch before comparing it; no outer join,
+    compatibility override, or field-value comparison is introduced.
+    """
     if not isinstance(metadata_policy, str) or metadata_policy not in ("strict", "preserve_sources"):
         raise ValueError("metadata_policy must be 'strict' or 'preserve_sources'")
     if isinstance(paths, (str, Path)):
@@ -181,10 +194,17 @@ def open_mfdataset(paths, *, time="time", chunks="auto", engine="netcdf4", metad
     if len(set(sources)) != len(sources):
         raise ValueError("Duplicate input filenames are not allowed")
     opened = []
+    original_metadata = []
     try:
         for source in sources:
-            dataset = open_dataset(source, chunks=chunks, engine=engine, time=time)
+            dataset = open_dataset(source, chunks=chunks, engine=engine, time=source_time or time)
             opened.append(dataset)
+            # Selection may invalidate descriptive ranges. Preserve the raw
+            # source declarations before adaptation removes those ranges.
+            original_metadata.append(_source_metadata(dataset) if metadata_policy == "preserve_sources" else None)
+            if preprocess is not None:
+                dataset = preprocess(dataset)
+                opened[-1] = dataset
             validate_time(dataset, time=time)
         dimension = opened[0][time].dims[0]
         if any(dataset[time].dims != (dimension,) for dataset in opened):
@@ -220,14 +240,14 @@ def open_mfdataset(paths, *, time="time", chunks="auto", engine="netcdf4", metad
 
         combined.set_close(close_all)
         source_records = []
-        for source, source_dataset in zip(sources, opened):
+        for source, source_dataset, source_metadata in zip(sources, opened, original_metadata):
             record = input_record(source)
             # Multiple sources have separate processing histories. Keep each
             # branch instead of falsely linearizing or discarding that history.
             if PROVENANCE_ATTRIBUTE in source_dataset.attrs:
                 record["provenance"] = json.loads(source_dataset.attrs[PROVENANCE_ATTRIBUTE])
             if metadata_policy == "preserve_sources":
-                record["source_metadata"] = _source_metadata(source_dataset)
+                record["source_metadata"] = source_metadata
             source_records.append(record)
         result = record_operation(
             combined, "open_mfdataset",

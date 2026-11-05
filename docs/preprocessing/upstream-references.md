@@ -1,6 +1,6 @@
 # 官方库源码调研与选型依据
 
-调研日期：2026-11-01。目标是学习基础气象前处理与代码管理，支撑 [目标代码树](architecture.md) 和 [实施计划](implementation-plan.md)。本轮没有安装这些库、执行其代码、复制其算法或下载真实气象资料。
+仓库更新版本：0.7.0（2026-11-05）；P0 调研与本轮验证日期：2026-11-01。0.4.0–0.6.0 开发阶段未单独发布，现纳入本次仓库更新。本文保留最初源码调研阶段的记录，目标是学习基础气象前处理与代码管理，支撑 [目标代码树](architecture.md) 和 [实施计划](implementation-plan.md)。P0 阶段没有安装这些库、执行其代码、复制其算法或下载真实气象资料。后续本地 0.4.0 实际调用并测试 cfgrib/ecCodes 与 Zarr，0.5.0 完成 xESMF/ESMPy 首批规则网格验收，0.6.0 增加 MetPy 固定/混合层插值，当前 0.7.0 已完成首批具名月均气压层产品适配与验收；各阶段的版本、验收和限制另见 [当前说明](../../Preprocessing/README.md) 与 [验证记录](../../Preprocessing/validation.json)，不改写本节历史事实。
 
 “官方”指机构维护或项目自身的官方仓库/文档，不表示所有项目均由政府机构开发。“常用”按气象 Python 生态集成关系与公开项目定位选择，不将 GitHub stars 当作科学正确性或使用人数证明。
 
@@ -9,8 +9,8 @@
 | 项目 | 维护来源/定位 | 重点学习与复用 | 在 Climate-Base 的角色 |
 | --- | --- | --- | --- |
 | [MetPy](https://github.com/Unidata/MetPy) | Unidata，气象 Python 工具 | 单位/CF 适配、插值接口，src/tests/docs/examples 管理 | 设计参照；专门插值按需调用；不引入全部 calc |
-| [GeoCAT-comp](https://github.com/NCAR/geocat-comp) | NCAR GeoCAT | 混合层到气压层、维度与元数据包装、可信参考值验证 | 可选 vertical 后端 |
-| [WRF-Python](https://github.com/NCAR/wrf-python) | NCAR/GeoCAT，WRF 专用 | 抽取、去交错、模式坐标与风矢量适配 | 可选 WRF 适配器 |
+| [GeoCAT-comp](https://github.com/NCAR/geocat-comp) | NCAR GeoCAT | 混合层到气压层、维度与元数据包装、可信参考值验证 | 设计与可选对照；实际 vertical 内核为其调用的 MetPy |
+| [WRF-Python](https://github.com/NCAR/wrf-python) | NCAR/GeoCAT，WRF 专用 | 抽取、去交错、模式坐标与风矢量适配 | 仅保留历史调研；当前不做 WRF 适配 |
 | [xarray](https://github.com/pydata/xarray) | PyData 社区，带标签数组 | Dataset/DataArray、I/O backend、CF/cftime、Dask | 新通用 API 的基础数据模型 |
 | [cf-xarray](https://github.com/xarray-contrib/cf-xarray) | xarray-contrib 社区 | CF 语义访问器、坐标与关联变量识别 | 元数据识别基础 |
 | [cfgrib](https://github.com/ecmwf/cfgrib) | ECMWF | ecCodes 到 xarray 的 GRIB 读取适配 | 可选 grib 后端 |
@@ -54,11 +54,13 @@ NCAR 已有 [Pivot to Python](https://www.ncl.ucar.edu/Document/Pivot_to_Python/
 
 [`test_interpolation.py`](https://github.com/NCAR/geocat-comp/blob/v2026.04.0/test/test_interpolation.py) 使用 NCL 参考输出及不同输入形态作验证；[pre-commit 配置](https://github.com/NCAR/geocat-comp/blob/v2026.04.0/.pre-commit-config.yaml) 固定检查工具版本。我们采用解析真值、上游对照、元数据与错误边界并行的测试方法。
 
-[`pyproject.toml`](https://github.com/NCAR/geocat-comp/blob/v2026.04.0/pyproject.toml) 包含 `eofs/xskillscore` 等依赖，因此 GeoCAT 放在 vertical 可选组。GeoCAT-examples 的 [Gallery 与文档组织](https://github.com/NCAR/geocat-examples) 可作为示例管理参考，不成为运行依赖。
+[`pyproject.toml`](https://github.com/NCAR/geocat-comp/blob/v2026.04.0/pyproject.toml) 包含 `eofs/xskillscore` 等依赖。0.6.0 的实际 `vertical` extra 仅安装 MetPy 1.7.1 系列，直接调用 GeoCAT 使用的公开 `interpolate_1d` / `log_interpolate_1d` 内核；GeoCAT 保留为可选双公式/双方法对照。原规划 `_geocat.py` 因此改为 `_metpy.py`，没有复制插值算法，也不引入未用运行依赖。独立增加 CF 两公式识别、单位/层中心/标签约束、原相邻区间与精确层命中、地下层/缺 ps 规则，以及 Dask 整柱执行边界。GeoCAT-examples 的 [Gallery 与文档组织](https://github.com/NCAR/geocat-examples) 仍作为示例管理参考。
+
+0.6.0 第一阶段验收完成，4 项真实 GeoCAT 双公式/双方法对照通过；同源内核对照之外另有独立解析真值。Windows 源码/树外 wheel 各 593 通过、26 跳过，核心依赖环境 483 通过、136 跳过，HPC 候选安装包 619 项全通过；35 个运行时模块逐字节一致。ERA5 小样本 12 通过、2 项预期拒绝，linear/log 对照最大误差 0；其中混合层采用合成 CF 系数，不代表原始模式层产品。以上为历史 P6 验收；当前 P7 另记，WRF 已排除。
 
 ### WRF-Python
 
-[`destag.py`](https://github.com/NCAR/wrf-python/blob/v1.4.2/src/wrf/destag.py) 把去交错与元数据包装分开；相邻格点求中点是网格位置变换，可纳入前处理。WRF 变量抽取、去交错、插值与风坐标转换放专用适配层，CAPE/涡度等诊断留在范围外。
+本节保留 P0 历史调研，**按当前范围不做 WRF 适配，也不新增 WRF-Python 依赖**。[`destag.py`](https://github.com/NCAR/wrf-python/blob/v1.4.2/src/wrf/destag.py) 将去交错与元数据包装分开，这只是设计参考，不表示本项目会实现其变量抽取、去交错、插值或风坐标转换。
 
 当前核验版 [`pyproject.toml`](https://github.com/NCAR/wrf-python/blob/v1.4.2/pyproject.toml) 使用 scikit-build-core/CMake 与 Fortran，Python ≥3.10，维护者为 GeoCAT；[`ci.yml`](https://github.com/NCAR/wrf-python/blob/v1.4.2/.github/workflows/ci.yml) 包含构建 wheel 后安装测试。因此不能沿用“已停更/只能用旧 Python”的笼统结论，也不能从其元数据推断所有 Windows 路径都已持续验证。
 
@@ -82,7 +84,11 @@ ECMWF 的 [官方说明](https://github.com/ecmwf/cfgrib/tree/1d11c7b919e9e87eba
 
 实际分层是 [`frontend.py`](https://github.com/pangeo-data/xESMF/blob/b30d1f12b085cc162af9cde359925ab51bdc1331/xesmf/frontend.py)（用户 API）、[`backend.py`](https://github.com/pangeo-data/xESMF/blob/b30d1f12b085cc162af9cde359925ab51bdc1331/xesmf/backend.py)（ESMPy 包装）、[`smm.py`](https://github.com/pangeo-data/xESMF/blob/b30d1f12b085cc162af9cde359925ab51bdc1331/xesmf/smm.py)（稀疏权重应用）。[用户 API](https://xesmf.readthedocs.io/en/stable/user_api.html) 支持权重复用；保守法需要边界，缺二维 bounds 不能按一维方式自动推导。
 
-我们的新增设计是为权重建立包含真实坐标、bounds、mask、方法、选项和后端版本的指纹。仅依赖 shape 形成的文件名不能判断两张网格相同。ESMPy/ESMF 采用独立环境，参见 [安装说明](https://xesmf.readthedocs.io/en/stable/installation.html)。
+本地 0.5.0 已按该分层实现 `regrid/api.py`、`grids.py`、`weights.py` 和唯一数值后端边界 `_xesmf.py`。新增实现包含真实坐标、bounds、mask、方法、周期设置、固定数值选项和后端版本的权重指纹，以及带校验清单的拒覆盖本地缓存；同 shape 不等于同网格。适配器调用 xESMF 0.9.2 的公开 `Regridder`/`to_netcdf` 接口，没有复制插值内核。
+
+本批只接受升序一维地理经纬网与显式浮点标量字段，提供 bilinear、nearest_s2d、nearest_d2s、conservative、conservative_normed。保守方法使用显式连续 CF bounds，遵循 ESMF 大圆边界球面多边形面积；nearest_d2s 保留上游向目标汇集求和的语义，不能当作普通取最近值。静态掩膜精确对齐，缺测不动态归一，场保持 Dask 惰性。ESMPy/ESMF 采用独立受支持环境，Python extra 不能替代原生安装，参见 [安装说明](https://xesmf.readthedocs.io/en/stable/installation.html)。本轮验收以 [validation.json](../../Preprocessing/validation.json) 的实际记录为准，缺后端跳过不算数值验证通过。
+
+0.5.0 实测环境为独立 Linux Python 3.12.16、xESMF 0.9.2、ESMPy/ESMF 8.9.1，已安装候选 wheel 的完整 498 项测试通过、无跳过。真实 ERA5 P5 安装包复验为 8 项通过、2 项预期拒绝，原文件大小和修改时间不变；0.4.0 旧真实资料套件在 0.5.0 与 0.6.0 均未重跑。这是历史 P5 验收；0.6.0 已完成 P6 首批固定/混合层插值，二维曲线网格等扩展不算已经完成。
 
 <a id="meteostat"></a>
 
@@ -141,4 +147,24 @@ MetPy 核验版为 BSD-3-Clause；GeoCAT-comp、WRF-Python 为 Apache-2.0；Mete
 
 ## 7. 本轮验证范围
 
-已完成官方仓库/文档与关键源码阅读、远端 ref 核验、本地现有结构审计和文档检查。未运行上游包、未做真实数据兼容或数值性能测试，未将所有候选依赖安装为工作环境；这些属于后续对应实施阶段。
+P0 阶段完成了官方仓库/文档与关键源码阅读、远端 ref 核验、本地现有结构审计和文档检查。该阶段未运行上游包、未做真实数据兼容或数值性能测试，未将所有候选依赖安装为工作环境。后续版本实际完成的运行与数据验证分别记录，不由本调研报告代替。
+
+## P7 具名产品证据
+
+以下官方页面及实际 header 于 2026-11-01 打开核验。它们限定产品语义及适配规则，不能替代本项目真实数据数值验收；示例名称也不是对整个提供方的自动识别表。WRF 不在 P7 范围。
+
+| Profile | 官方证据 | 适配约束 |
+| --- | --- | --- |
+| `era5-monthly-pressure-levels` | [CDS 月均气压层产品](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-pressure-levels-monthly-means?tab=overview)，DOI 10.24381/cds.6860a573；[ECMWF 数据说明](https://confluence.ecmwf.int/plugins/viewsource/viewpagesrc.action?pageId=540945091) | 限整月再分析均值 `monthly_averaged_reanalysis` / `moda`，与 by-hour-of-day / `mnth` 分开；位势单位 m² s⁻²，气压垂直速度 Pa s⁻¹；expver 和成员显式选择 |
+| `merra2-m2imnpasm-5.12.4` | [NASA 产品记录](https://data.nasa.gov/dataset/merra-2-instm-3d-asm-np-3dmonthly-meaninstantaneouspressure-levelassimilationassimilated-m-b72b2)，DOI 10.5067/2E096JV59PK7；[GMAO File Specification v1.1](https://gmao.gsfc.nasa.gov/media/publications/zbly36ziNFDFbmYmvhQeVqPhUo/Bosilovich785.pdf) | M2IMNPASM / instM_3d_asm_Np 5.12.4，月均瞬时同化场；不能与三小时 inst3、月内逐时 instU、tavg 或 ANA 产品混同；ShortName/VersionID 等已有证据冲突须拒绝 |
+| `jra3q-monthly-isobaric-analysis` | [GDEX d640002](https://gdex.ucar.edu/datasets/d640002/)，DOI 10.5065/PH0D-MH18；下列实际 NetCDF header | 只接受 anl_p/anl_p125 的分析均值；dataset 内还含其他统计量与预报产品，d640002 身份本身不足以证明 mean |
+
+JRA-3Q 直接核验了 [anl_p125 U 风月均 header](https://tds.gdex.ucar.edu/thredds/dodsC/files/d640002/anl_p125/196002/jra3q-ms-mn.anl_p125.0_2_2.ugrd-pres-an-ll125-mn.1960020100_1960022918.nc.html) 及 [anl_p Gaussian 月均 header](https://tds.gdex.ucar.edu/thredds/dodsC/files/d640002/anl_p/198006/jra3q-ms-mn.anl_p.0_2_5.vpot-pres-an-gauss-mn.1980060100_1980063018.nc.html)。前者展示 `ugrd-pres-an-ll125-mn` 字段；后者用于核验产品/坐标表示，不表示 velocity potential 已加入本包角色表。共有证据为 `rda_dataset=d640002`、字段 `data_type=analysis`、`statistical_processing=Mean(6 hour analysis)`、`original_time_step=6-hour`、`level_code=100`，轴为 time、pressure_level(hPa)、lat、lon。`anl_p` 已由 GDEX 从约化 N240 插值成规则 Gaussian 960×480；不得把它说成直接支持原生约化网格。原始 `weight` 等辅助字段保持其实际语义，不拿普通点均值替代 Gaussian 权重。
+
+风向元数据依据 [ECMWF GRIB2 Flag Table 3.3](https://codes.ecmwf.int/grib/format/grib2/ftables/3/3/)：从最高位编号的第 5 位区分地理东/北与网格 x/y 方向；适配不做矢量旋转。GDEX header 的地理方向字符串是可追溯证据。
+
+MERRA-2 文件规范明确说明其早期 `standard_name` 是 ad hoc，并非严格 CF 词汇。不能因此接受所有未知声明或覆盖冲突；窄别名须有实际 header 依据并保存原值。该规范将 ASM 的 H 描述为层高度，不能单凭变量名 H 自动声明其为位势高度。本轮实现进一步要求 MERRA geopotential_height 源字段已有明确同名 standard_name；没有该声明，即使单位为 m/gpm 也拒绝。ERA5、MERRA-2 和 JRA-3Q 的单位与统计含义需分别核验；适配层不执行重力换算，也不补写未经验证的时间统计属性。
+
+本轮真实 ERA5 P7 样本来自 NCAR/RDA 转换的年文件，不能据此宣称所有 CDS NetCDF、GRIB 或模式层表示已验收。MERRA-2/JRA-3Q 原始样本未验收；公共测试中的最小合成夹具用于复现明确契约，与真实产品数值验收分开。资料许可按来源记录：软件许可证不替代 CDS、NASA 或 JMA/GDEX 的数据使用条款。
+
+0.7.0 首批 P7 验收完成：Windows 源码和树外实际安装的候选 wheel 各 **714 通过、26 跳过**；核心依赖环境 **602 通过、138 跳过**；HPC 安装候选包 **740 全通过、0 跳过**（105 条警告）。38 个运行模块及共 77 个 Python 文件逐字节一致。真实 ERA5 P7 为 **10 通过、4 项预期拒绝**，原值/API/CLI 对照最大误差 0，原文件大小和修改时间不变；三个 profile 的合成示例与各自 CLI 全通过。MERRA-2/JRA-3Q 原始样本未验收，不把合成契约检查当作真实数值通过。下一阶段为 P8 站点扩展；WRF 不做适配，未新增运行依赖，验证记录保留为 2026-11-01 的实际结果。

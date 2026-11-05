@@ -38,7 +38,7 @@ def load_config(path):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Prepare local CF NetCDF with xarray/Dask or run compatible monthly commands."
+        description="Prepare explicit local NetCDF/GRIB/Zarr with xarray/Dask or run compatible monthly commands."
     )
     parser.add_argument("action", choices=("check", "seasonal", "inspect", "prepare"))
     parser.add_argument("config", type=Path)
@@ -78,8 +78,14 @@ def _prepare_command(action, path, parser):
         if config.output is None:
             parser.error("prepare requires output in the configuration")
         if config.output.exists() or config.output.is_symlink():
-            raise FileExistsError("Output exists; choose a new NetCDF filename")
-    with prepare_dataset(config.inputs, **config.options) as dataset:
+            raise FileExistsError("Output exists; choose a new destination")
+    options = dict(config.options)
+    if action == "inspect" and options.get("regrid") is not None:
+        # Inspection may generate geometry weights in memory, but never creates
+        # cache/output files. Explicit prepare/Python calls may persist weights.
+        options["regrid"] = dict(options["regrid"])
+        options["regrid"].pop("weights_dir", None)
+    with prepare_dataset(config.inputs, **options) as dataset:
         summary = {
             "state": "inspected" if action == "inspect" else "prepared",
             "dimensions": dict(dataset.sizes),
@@ -90,9 +96,19 @@ def _prepare_command(action, path, parser):
             },
             "field_values_read": action == "prepare",
             "outputs_written": action == "prepare",
+            "regrid_geometry_evaluated": options.get("regrid") is not None,
+            "vertical_field_graph_built": options.get("vertical") is not None,
+            "product_adapter": (options["adapter"]["product"] if options.get("adapter") is not None else None),
         }
         if action == "prepare":
-            summary["output"] = str(write_dataset(dataset, config.output))
+            if config.output_format == "zarr":
+                from .io.zarr import write_zarr
+
+                writer = write_zarr
+            else:
+                writer = write_dataset
+            summary["output"] = str(writer(dataset, config.output))
+            summary["output_format"] = config.output_format
         print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
 
